@@ -46,8 +46,9 @@ def _setup(context):
         cmd_vel = LaunchConfiguration("real_cmd_vel_topic").perform(context)
         goal = LaunchConfiguration("goal_topic").perform(context)
         initial_path = LaunchConfiguration("initial_path_topic").perform(context)
-        cloud_is_world = False
-        need_extrinsic = True
+        grid_frame_id = LaunchConfiguration("real_grid_frame_id").perform(context)
+        cloud_is_world = _as_bool(LaunchConfiguration("real_cloud_is_world").perform(context))
+        need_extrinsic = _as_bool(LaunchConfiguration("real_need_extrinsic").perform(context))
         intrinsics = {
             "grid_map.cx": 317.19183349609375,
             "grid_map.cy": 256.4806823730469,
@@ -62,6 +63,7 @@ def _setup(context):
         cmd_vel = "/quad_0/cmd_vel"
         goal = "/move_base_simple/goal"
         initial_path = "/initial_path"
+        grid_frame_id = "world"
         cloud_is_world = True
         need_extrinsic = False
         intrinsics = {}
@@ -71,6 +73,7 @@ def _setup(context):
         **common,
         **intrinsics,
         "fsm.navi_mode": navi_mode,
+        "grid_map.frame_id": grid_frame_id,
         "grid_map.sensor_type": sensor_type,
         "grid_map.cloud_is_world": cloud_is_world,
         "grid_map.need_extrinsic": need_extrinsic,
@@ -226,11 +229,14 @@ def generate_launch_description():
             DeclareLaunchArgument("pcd_map_file", default_value=""),
             DeclareLaunchArgument("use_zsibot_bridge", default_value="false"),
             DeclareLaunchArgument("zsibot_config_file", default_value=""),
-            DeclareLaunchArgument("real_body_pose_topic", default_value="/LIO/odom_vehicle"),
-            DeclareLaunchArgument("real_sensor_pose_topic", default_value="/LIO/odom_imu"),
-            DeclareLaunchArgument("real_cloud_topic", default_value="/LIO/clouds_lidar"),
+            DeclareLaunchArgument("real_body_pose_topic", default_value="/state_estimation"),
+            DeclareLaunchArgument("real_sensor_pose_topic", default_value="/state_estimation"),
+            DeclareLaunchArgument("real_cloud_topic", default_value="/cloud_registered"),
             DeclareLaunchArgument("real_depth_topic", default_value="/camera/aligned_depth_to_color/image_raw"),
             DeclareLaunchArgument("real_cmd_vel_topic", default_value="/cmd_vel"),
+            DeclareLaunchArgument("real_grid_frame_id", default_value="odom"),
+            DeclareLaunchArgument("real_cloud_is_world", default_value="true"),
+            DeclareLaunchArgument("real_need_extrinsic", default_value="false"),
             DeclareLaunchArgument("goal_topic", default_value="/move_base_simple/goal"),
             DeclareLaunchArgument("initial_path_topic", default_value="/initial_path"),
             DeclareLaunchArgument("map_size_x", default_value="40.0"),

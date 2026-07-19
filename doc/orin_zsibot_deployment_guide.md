@@ -8,6 +8,7 @@
 - RK3588 IP：`192.168.234.1`
 - SDK 端口：`43988`
 - 默认型号：`zsl-1w`
+- 默认 LIO：FAST_LIO `omni_dog` / `omni_dog_relocalization`
 
 ## 1. 总体链路
 
@@ -170,7 +171,19 @@ Planner 需要：
 
 ## 7. 启动 Planner + Bridge
 
-如果新狗话题名正好和默认一致：
+当前 SCAN-Planner 真机默认值已经适配 FAST_LIO 的 `omni_dog.launch.py`
+和 `omni_dog_relocalization.launch.py`：
+
+| SCAN-Planner launch 参数 | 默认值 | 来源 |
+| --- | --- | --- |
+| `real_body_pose_topic` | `/state_estimation` | FAST_LIO `/Odometry` remap |
+| `real_sensor_pose_topic` | `/state_estimation` | FAST_LIO 里 `base_frame_id == sensor_frame_id == livox_frame` |
+| `real_cloud_topic` | `/cloud_registered` | FAST_LIO 世界系点云 |
+| `real_grid_frame_id` | `odom` | FAST_LIO `common.odom_frame_id` |
+| `real_cloud_is_world` | `true` | `/cloud_registered` 已转到 odom/world 系 |
+| `real_need_extrinsic` | `false` | 使用 FAST_LIO 发布的传感器位姿 |
+
+因此 FAST_LIO 已启动后，可以直接运行：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -183,7 +196,7 @@ ros2 launch scan_planner run.launch.py \
   use_zsibot_bridge:=true
 ```
 
-如果话题名不同，启动时传参：
+如果现场 FAST_LIO 输出被改名，启动时传参：
 
 ```bash
 ros2 launch scan_planner run.launch.py \
@@ -191,9 +204,12 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   use_zsibot_bridge:=true \
-  real_body_pose_topic:=/your/robot/odom \
-  real_sensor_pose_topic:=/your/lidar/odom \
-  real_cloud_topic:=/your/lidar/points \
+  real_body_pose_topic:=/state_estimation \
+  real_sensor_pose_topic:=/state_estimation \
+  real_cloud_topic:=/cloud_registered \
+  real_grid_frame_id:=odom \
+  real_cloud_is_world:=true \
+  real_need_extrinsic:=false \
   real_cmd_vel_topic:=/cmd_vel
 ```
 
@@ -231,6 +247,14 @@ grid_map.cy: ...
 grid_map.fx: ...
 grid_map.fy: ...
 grid_map.k_depth_scaling_factor: 1000.0
+```
+
+使用当前 FAST_LIO 配置时，launch 会覆盖以下参数：
+
+```yaml
+grid_map.frame_id: odom
+grid_map.cloud_is_world: true
+grid_map.need_extrinsic: false
 ```
 
 ### 8.1 frame_id
@@ -487,9 +511,9 @@ ros2 topic echo /your/camera/odom --once
 1. Orin 能 ping/ssh RK3588。
 2. RK3588 配好 `sdk_config.yaml` 并重启运动控制。
 3. Orin 编译通过。
-4. 单独启动 `zsibot_cmd_bridge`。
-5. 手动发小 `/cmd_vel`，确认站立、前后、左右、旋转方向。
-6. 启动 LIO/点云，确认 odom 和 cloud 频率。
+4. 启动 FAST_LIO，确认 `/state_estimation` 和 `/cloud_registered` 正常。
+5. 单独启动 `zsibot_cmd_bridge`。
+6. 手动发小 `/cmd_vel`，确认站立、前后、左右、旋转方向。
 7. 启动 planner，但先不要给目标点，观察是否有 odom/map。
 8. 给很近的目标点，低速测试。
 9. 再逐步增大目标距离和速度限制。

@@ -67,9 +67,12 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   controller_mode:=closed_loop \
   use_zsibot_bridge:=true \
-  real_body_pose_topic:=/your/robot/odom \
-  real_sensor_pose_topic:=/your/lidar/odom \
-  real_cloud_topic:=/your/lidar/points \
+  real_body_pose_topic:=/state_estimation \
+  real_sensor_pose_topic:=/state_estimation \
+  real_cloud_topic:=/cloud_registered \
+  real_grid_frame_id:=odom \
+  real_cloud_is_world:=true \
+  real_need_extrinsic:=false \
   real_depth_topic:=/your/depth/image \
   real_cmd_vel_topic:=/cmd_vel
 ```
@@ -83,6 +86,9 @@ Topic meanings:
 | `real_cloud_topic` | `sensor_msgs/PointCloud2` | lidar obstacle input |
 | `real_depth_topic` | `sensor_msgs/Image` | depth obstacle input when `sensor_type:=depth` |
 | `real_cmd_vel_topic` | `geometry_msgs/Twist` | controller output and ZsiBot bridge input |
+| `real_grid_frame_id` | string | occupancy map frame, `odom` for the current FAST_LIO config |
+| `real_cloud_is_world` | bool | `true` for FAST_LIO `/cloud_registered` |
+| `real_need_extrinsic` | bool | `false` when `real_sensor_pose_topic` is already sensor pose |
 | `goal_topic` | `geometry_msgs/PoseStamped` | RViz/navigation goal when `navi_mode:=1` |
 | `initial_path_topic` | `nav_msgs/Path` | global path input when `navi_mode:=3` |
 
