@@ -110,7 +110,7 @@ ros2 launch scan_planner run.launch.py \
 
 桥接参数位于 `src/zsibot_cmd_bridge/config/zsibot_cmd_bridge.yaml`。其中 `local_ip` 是 Orin NX 在机器人控制网段的 IP，`dog_ip` 是 RK3588 运动控制板 IP。当前默认值适配 Orin NX `192.168.234.234`、RK3588 `192.168.234.1`。RK3588 侧还需要将 `/opt/export/config/sdk_config.yaml` 的 `target_ip` 配成 Orin NX 的 IP，`target_port` 与桥接节点 `local_port` 保持一致。
 
-完整双板部署、冒烟测试和故障排查见 `src/zsibot_cmd_bridge/README.md`。
+完整双板部署、冒烟测试和故障排查见 `doc/orin_zsibot_deployment_guide.md` 和 `src/zsibot_cmd_bridge/README.md`。
 
 ## 配置与接口
 

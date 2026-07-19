@@ -177,12 +177,13 @@ requires `move()` to be called in standing state.
 | `local_port` | `43988` | Must match RK3588 `target_port` |
 | `publish_rate` | `50.0` | SDK command resend rate |
 | `cmd_timeout` | `0.3` | Send zero if `/cmd_vel` is stale |
-| `max_vx` | `0.75` | Conservative planner-side limit |
-| `max_vy` | `0.35` | Conservative planner-side limit |
-| `max_yaw_rate` | `1.0` | Conservative planner-side limit |
+| `max_vx` | `0.3` | Conservative first-deployment limit |
+| `max_vy` | `0.15` | Conservative first-deployment limit |
+| `max_yaw_rate` | `0.5` | Conservative first-deployment limit |
 | `auto_stand` | `true` | Calls `standUp()` on startup |
 | `log_sdk_status` | `true` | Prints connection, battery, mode, command |
 | `status_log_period` | `2.0` | Seconds between status logs |
 
-The ZSL-1w API allows larger `move()` limits, but these defaults match the
-planner controller limits and are safer for first deployment.
+The ZSL-1w API allows larger `move()` limits, but these defaults intentionally
+keep first deployment slow. Increase the planner controller and bridge limits
+together after direction, odometry, and obstacle mapping are verified.

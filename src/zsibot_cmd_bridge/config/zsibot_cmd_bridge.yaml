@@ -5,9 +5,9 @@ zsibot_cmd_bridge:
     local_port: 43988
     publish_rate: 50.0
     cmd_timeout: 0.3
-    max_vx: 0.75
-    max_vy: 0.35
-    max_yaw_rate: 1.0
+    max_vx: 0.3
+    max_vy: 0.15
+    max_yaw_rate: 0.5
     deadband_vx: 0.0
     deadband_vy: 0.0
     deadband_yaw_rate: 0.0
