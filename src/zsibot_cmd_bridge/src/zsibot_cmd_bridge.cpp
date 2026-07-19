@@ -38,6 +38,10 @@ public:
     deadband_vy_ = declare_parameter<double>("deadband_vy", 0.0);
     deadband_yaw_rate_ = declare_parameter<double>("deadband_yaw_rate", 0.0);
     auto_stand_ = declare_parameter<bool>("auto_stand", true);
+    require_standing_before_move_ = declare_parameter<bool>("require_standing_before_move", true);
+    standup_check_period_ = declare_parameter<double>("standup_check_period", 0.2);
+    standup_retry_period_ = declare_parameter<double>("standup_retry_period", 1.0);
+    standup_wait_timeout_ = declare_parameter<double>("standup_wait_timeout", 10.0);
     send_zero_on_start_ = declare_parameter<bool>("send_zero_on_start", true);
     require_connection_ = declare_parameter<bool>("require_connection", false);
     status_log_period_ = declare_parameter<double>("status_log_period", 2.0);
@@ -47,6 +51,12 @@ public:
       throw std::runtime_error("publish_rate must be positive");
     if (cmd_timeout_ <= 0.0)
       throw std::runtime_error("cmd_timeout must be positive");
+    if (standup_check_period_ <= 0.0)
+      throw std::runtime_error("standup_check_period must be positive");
+    if (standup_retry_period_ <= 0.0)
+      throw std::runtime_error("standup_retry_period must be positive");
+    if (standup_wait_timeout_ <= 0.0)
+      throw std::runtime_error("standup_wait_timeout must be positive");
 
     RCLCPP_INFO(get_logger(), "Connecting ZsiBot SDK: local %s:%d -> dog %s",
                 local_ip_.c_str(), local_port_, dog_ip_.c_str());
@@ -59,8 +69,16 @@ public:
     {
       const uint32_t ret = highlevel_.standUp();
       RCLCPP_INFO(get_logger(), "standUp() returned %u", ret);
+      if (require_standing_before_move_)
+      {
+        waiting_for_standup_ = true;
+        standup_start_time_ = now();
+        last_standup_request_time_ = now();
+        last_standup_check_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+        RCLCPP_INFO(get_logger(), "Waiting for standUp state before sending move commands");
+      }
     }
-    if (send_zero_on_start_)
+    if (send_zero_on_start_ && !waiting_for_standup_)
       sendMove(0.0, 0.0, 0.0);
 
     last_cmd_time_ = now();
@@ -79,7 +97,8 @@ public:
   {
     try
     {
-      sendMove(0.0, 0.0, 0.0);
+      if (!waiting_for_standup_)
+        sendMove(0.0, 0.0, 0.0);
     }
     catch (const std::exception &e)
     {
@@ -112,6 +131,13 @@ private:
 
   void timerCallback()
   {
+    if (waiting_for_standup_)
+    {
+      handleStandupWait();
+      maybeLogStatus(true);
+      return;
+    }
+
     const bool timed_out = !have_cmd_ || (now() - last_cmd_time_).seconds() > cmd_timeout_;
     if (timed_out)
     {
@@ -137,6 +163,55 @@ private:
     {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
                            "HighLevel::move returned %u", ret);
+    }
+  }
+
+  void handleStandupWait()
+  {
+    const auto current_time = now();
+    if ((current_time - last_standup_check_time_).seconds() < standup_check_period_)
+      return;
+    last_standup_check_time_ = current_time;
+
+    uint32_t ctrlmode = 0;
+    try
+    {
+      ctrlmode = highlevel_.getCurrentCtrlmode();
+    }
+    catch (const std::exception &e)
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                           "Failed to query ctrlmode while waiting for standUp: %s", e.what());
+      return;
+    }
+
+    if (ctrlmode == 1 || ctrlmode == 3)
+    {
+      waiting_for_standup_ = false;
+      RCLCPP_INFO(get_logger(), "standUp state confirmed: ctrlmode=%u; move commands enabled",
+                  ctrlmode);
+      if (send_zero_on_start_)
+      {
+        sendMove(0.0, 0.0, 0.0);
+        last_sent_zero_ = true;
+      }
+      return;
+    }
+
+    const double wait_seconds = (current_time - standup_start_time_).seconds();
+    if ((current_time - last_standup_request_time_).seconds() >= standup_retry_period_)
+    {
+      last_standup_request_time_ = current_time;
+      const uint32_t ret = highlevel_.standUp();
+      RCLCPP_INFO(get_logger(), "Retrying standUp() while ctrlmode=%u; returned %u", ctrlmode, ret);
+    }
+
+    if (wait_seconds > standup_wait_timeout_)
+    {
+      RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "Still waiting for standUp state after %.1fs: ctrlmode=%u. Move commands remain blocked.",
+          wait_seconds, ctrlmode);
     }
   }
 
@@ -188,18 +263,26 @@ private:
   double deadband_vy_{0.0};
   double deadband_yaw_rate_{0.0};
   bool auto_stand_{true};
+  bool require_standing_before_move_{true};
+  double standup_check_period_{0.2};
+  double standup_retry_period_{1.0};
+  double standup_wait_timeout_{10.0};
   bool send_zero_on_start_{true};
   bool require_connection_{false};
   double status_log_period_{2.0};
   bool log_sdk_status_{true};
 
   bool have_cmd_{false};
+  bool waiting_for_standup_{false};
   bool last_sent_zero_{false};
   double vx_{0.0};
   double vy_{0.0};
   double yaw_rate_{0.0};
   rclcpp::Time last_cmd_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_status_log_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time standup_start_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_standup_request_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_standup_check_time_{0, 0, RCL_ROS_TIME};
 };
 }  // namespace zsibot_cmd_bridge
 

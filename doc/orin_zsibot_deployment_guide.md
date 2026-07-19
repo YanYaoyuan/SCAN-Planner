@@ -197,6 +197,7 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
+  publish_robot_description:=false \
   use_zsibot_bridge:=true
 ```
 
@@ -207,6 +208,7 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
+  publish_robot_description:=false \
   use_zsibot_bridge:=true \
   real_body_pose_topic:=/state_estimation \
   real_sensor_pose_topic:=/state_estimation \
@@ -224,12 +226,78 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   sensor_type:=depth \
   controller_mode:=closed_loop \
+  publish_robot_description:=false \
   use_zsibot_bridge:=true \
   real_body_pose_topic:=/your/robot/odom \
   real_sensor_pose_topic:=/your/camera/odom \
   real_depth_topic:=/your/depth/image \
   real_cmd_vel_topic:=/cmd_vel
 ```
+
+### 7.1 录制 waypoint 并使用 navi_mode=2
+
+`navi_mode=2` 使用配置文件里的 `fsm.waypoints`，适合先用遥控器/手动方式把机器狗带到几个关键点，然后保存成一条预设路线。
+
+先确认 FAST_LIO 已经发布 odom：
+
+```bash
+ros2 topic echo /state_estimation --once
+```
+
+启动 waypoint 记录器：
+
+```bash
+cd /app/scan_planner_orin_nx_aarch64_20260719
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 run scan_planner keypoint_recorder.py \
+  --odom /state_estimation \
+  --output /app/scan_planner_orin_nx_aarch64_20260719/keypoints.yaml
+```
+
+记录器按键：
+
+```text
+Enter / Space / a  记录当前机器狗位置为 waypoint
+l                  列出已记录 waypoint
+u                  撤销最后一个 waypoint
+r                  替换指定 waypoint
+d                  删除指定 waypoint
+s                  保存
+q                  保存并退出
+```
+
+保存后的 `keypoints.yaml` 类似：
+
+```yaml
+scan_planner_node:
+  ros__parameters:
+    fsm.waypoints: [0.5, 0, 0.3, 1.0, 0, 0.3]
+```
+
+这些点是 `odom` 坐标系下的绝对坐标，不是相对移动量。记录点时脚本直接读取 `/state_estimation.pose.pose.position`。
+
+用录好的 waypoint 跑预设路线：
+
+```bash
+ros2 launch scan_planner run.launch.py \
+  is_real_world:=true \
+  navi_mode:=2 \
+  keypoints_file:=/app/scan_planner_orin_nx_aarch64_20260719/keypoints.yaml \
+  sensor_type:=lidar \
+  controller_mode:=closed_loop \
+  publish_robot_description:=false \
+  use_zsibot_bridge:=true \
+  real_body_pose_topic:=/state_estimation \
+  real_sensor_pose_topic:=/state_estimation \
+  real_cloud_topic:=/cloud_registered \
+  real_grid_frame_id:=odom \
+  real_cloud_is_world:=true \
+  real_need_extrinsic:=false
+```
+
+启动后，planner 收到第一帧 `/state_estimation` 就会开始规划到第一个 waypoint。接近当前 waypoint 约 `0.5m`，或者当前段轨迹执行结束后，会自动切到下一个 waypoint。
 
 ## 8. 需要重点适配的参数
 
@@ -433,9 +501,25 @@ target_port: 43988
 处理：
 
 - 确认 `auto_stand: true`
+- 确认 `require_standing_before_move: true`，bridge 会等 `ctrlmode=1` 或 `ctrlmode=3` 后才发 `move()`
 - 看 bridge 日志里的 `ctrlmode`
 - 停掉其他 SDK demo
 - 重启 RK3588 运动控制程序
+
+如果日志持续出现：
+
+```text
+Cannot transition to 'move' state: must transition to 'standUp' first.
+```
+
+说明 `standUp()` 命令虽然发送成功，但 SDK 状态机尚未确认进入站立状态。新版 bridge 启动后会先等待：
+
+```text
+Waiting for standUp state before sending move commands
+standUp state confirmed: ctrlmode=1; move commands enabled
+```
+
+在看到 `move commands enabled` 之前，不要发布 `/cmd_vel` 做运动测试。
 
 ### 10.5 Planner 一直 no odom
 
@@ -529,3 +613,42 @@ ros2 topic echo /your/camera/odom --once
 - 避免同时运行官方 SDK demo 和 `zsibot_cmd_bridge`。
 - 每次改 RK3588 SDK 配置后都重启运动控制。
 - 如果现场网络不稳定，先不要跑 planner，先用 bridge 冒烟测试。
+
+## 13. 使用 Orin NX sysroot 交叉编译
+
+如果已经从 Orin NX 下载了 sysroot，例如：
+
+```bash
+/home/user/jetson/orin-nx/sysroot
+```
+
+可以在开发机上用仓库里的 qemu wrapper 调用 sysroot 里的 ARM64 编译器：
+
+```bash
+cd /home/user/robot/SCAN-Planner
+ORIN_NX_SYSROOT=/home/user/jetson/orin-nx/sysroot \
+  tools/cross/build_orin_nx.sh
+```
+
+脚本会做三件事：
+
+1. 修补 sysroot 中 ROS2 CMake export 里的 `libpython3.10.so` 绝对路径。
+2. 使用 `tools/cross/orin_nx_toolchain.cmake` 调用 sysroot 里的 `aarch64-linux-gnu-gcc/g++`。
+3. 编译 `scan_planner` 和 `zsibot_cmd_bridge` 需要的依赖链。
+
+成功后产物在：
+
+```bash
+install-orin-sysroot/
+```
+
+可以用 `file` 确认是 ARM64：
+
+```bash
+file install-orin-sysroot/lib/scan_planner/scan_planner_node
+file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_bridge
+```
+
+正常应显示 `ELF 64-bit ... ARM aarch64`。
+
+注意：sysroot 里的 `gcc/g++` 是 ARM64 板端原生编译器，不是 x86 可直接运行的交叉编译器；开发机上直接执行会报 `aarch64-binfmt-P: Could not open '/lib/ld-linux-aarch64.so.1'`。本仓库通过 `qemu-aarch64-static` wrapper 解决这个问题，因此编译速度会比普通交叉编译慢。

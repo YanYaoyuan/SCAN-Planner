@@ -189,6 +189,10 @@ requires `move()` to be called in standing state.
 | `max_vy` | `0.15` | Conservative first-deployment limit |
 | `max_yaw_rate` | `0.5` | Conservative first-deployment limit |
 | `auto_stand` | `true` | Calls `standUp()` on startup |
+| `require_standing_before_move` | `true` | Blocks `move()` until SDK reports standing/move mode |
+| `standup_check_period` | `0.2` | Seconds between ctrlmode checks while standing up |
+| `standup_retry_period` | `1.0` | Seconds between repeated `standUp()` requests while waiting |
+| `standup_wait_timeout` | `10.0` | Seconds before warning that standUp is still not confirmed |
 | `log_sdk_status` | `true` | Prints connection, battery, mode, command |
 | `status_log_period` | `2.0` | Seconds between status logs |
 

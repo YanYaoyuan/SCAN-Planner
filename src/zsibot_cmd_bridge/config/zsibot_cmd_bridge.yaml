@@ -12,6 +12,10 @@ zsibot_cmd_bridge:
     deadband_vy: 0.0
     deadband_yaw_rate: 0.0
     auto_stand: true
+    require_standing_before_move: true
+    standup_check_period: 0.2
+    standup_retry_period: 1.0
+    standup_wait_timeout: 10.0
     send_zero_on_start: true
     require_connection: false
     log_sdk_status: true

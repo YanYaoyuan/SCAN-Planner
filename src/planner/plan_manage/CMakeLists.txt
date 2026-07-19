@@ -24,6 +24,37 @@ find_package(tf2_ros REQUIRED)
 find_package(traj_utils REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
+if(CMAKE_SYSROOT)
+  set(_scan_planner_numeric_search_paths
+    "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/openblas-pthread"
+    "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/lapack"
+    "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/blas")
+  find_library(SCAN_PLANNER_LAPACK_LIBRARY
+    NAMES lapack
+    PATHS ${_scan_planner_numeric_search_paths}
+    NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH)
+  find_library(SCAN_PLANNER_BLAS_LIBRARY
+    NAMES openblas blas
+    PATHS ${_scan_planner_numeric_search_paths}
+    NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH)
+else()
+  find_library(SCAN_PLANNER_LAPACK_LIBRARY NAMES lapack)
+  find_library(SCAN_PLANNER_BLAS_LIBRARY NAMES openblas blas)
+endif()
+set(SCAN_PLANNER_NUMERIC_LIBS "")
+if(SCAN_PLANNER_LAPACK_LIBRARY AND SCAN_PLANNER_BLAS_LIBRARY)
+  list(APPEND SCAN_PLANNER_NUMERIC_LIBS
+    "${SCAN_PLANNER_LAPACK_LIBRARY}"
+    "${SCAN_PLANNER_BLAS_LIBRARY}")
+  if(CMAKE_SYSROOT)
+    list(APPEND SCAN_PLANNER_NUMERIC_LIBS
+      "-Wl,-rpath-link,${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu"
+      "-Wl,-rpath-link,${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/openblas-pthread")
+  endif()
+endif()
+
 set(scan_planner_dependencies
   ament_index_cpp bspline_opt geometry_msgs nav_msgs path_searching plan_env
   rclcpp scan_planner_msgs sensor_msgs std_msgs tf2 tf2_geometry_msgs tf2_ros
@@ -35,7 +66,7 @@ add_executable(scan_planner_node
   src/planner_manager.cpp)
 target_include_directories(scan_planner_node PRIVATE include)
 ament_target_dependencies(scan_planner_node ${scan_planner_dependencies})
-target_link_libraries(scan_planner_node Eigen3::Eigen)
+target_link_libraries(scan_planner_node Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
 
 foreach(target open_loop_controller closed_loop_controller go2_kinematic_sim go2_gait_publisher)
   add_executable(${target} src/${target}.cpp)

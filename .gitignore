@@ -2,6 +2,10 @@
 /build/
 /install/
 /log/
+/build-orin*/
+/install-orin*/
+/log-orin*/
+/dist/
 /devel/
 /.colcon/
 /compile_commands.json

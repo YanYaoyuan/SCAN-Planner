@@ -105,12 +105,44 @@ ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
 
 ```bash
 ros2 launch scan_planner run.launch.py \
-  is_real_world:=true controller_mode:=closed_loop use_zsibot_bridge:=true
+  is_real_world:=true controller_mode:=closed_loop \
+  publish_robot_description:=false use_zsibot_bridge:=true
 ```
 
 桥接参数位于 `src/zsibot_cmd_bridge/config/zsibot_cmd_bridge.yaml`。其中 `local_ip` 是 Orin NX 在机器人控制网段的 IP，`dog_ip` 是 RK3588 运动控制板 IP。当前默认值适配 Orin NX `192.168.234.234`、RK3588 `192.168.234.1`。RK3588 侧还需要将 `/opt/export/config/sdk_config.yaml` 的 `target_ip` 配成 Orin NX 的 IP，`target_port` 与桥接节点 `local_port` 保持一致。
 
 完整双板部署、冒烟测试和故障排查见 `doc/orin_zsibot_deployment_guide.md` 和 `src/zsibot_cmd_bridge/README.md`。
+
+### Orin NX sysroot 交叉编译
+
+如果已经从 Orin NX 下载了 sysroot，例如 `/home/user/jetson/orin-nx/sysroot`，可以在开发机上直接使用仓库里的交叉编译脚本：
+
+```bash
+cd /home/user/robot/SCAN-Planner
+ORIN_NX_SYSROOT=/home/user/jetson/orin-nx/sysroot tools/cross/build_orin_nx.sh
+```
+
+这套流程使用的是 sysroot 里的 `aarch64-linux-gnu-gcc/g++`。由于 sysroot 里的编译器是 ARM64 板端原生编译器，x86 开发机不能直接执行它，脚本会通过 `qemu-aarch64-static` wrapper 调用。实测在本机完成 `scan_planner` 和 `zsibot_cmd_bridge` 依赖链编译，输出目录为：
+
+```bash
+install-orin-sysroot/
+```
+
+可用下面命令确认产物架构：
+
+```bash
+file install-orin-sysroot/lib/scan_planner/scan_planner_node
+file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_bridge
+```
+
+正常应显示 `ELF 64-bit ... ARM aarch64`。
+
+注意事项：
+
+- 需要开发机已安装 `qemu-aarch64-static`。
+- 脚本会修补 sysroot 中 ROS 2 CMake export 里的裸 `libpython3.10.so` 绝对路径，并保留 `.orin-cross-bak` 备份。
+- 如果最终链接阶段报 `libblas.so.3`、`liblapack.so.3` 找不到，确认 sysroot 中存在 `/usr/lib/aarch64-linux-gnu/libblas.so.3` 和 `/usr/lib/aarch64-linux-gnu/liblapack.so.3`。
+- qemu wrapper 编译速度比普通交叉编译慢，完整构建约数分钟到十几分钟。
 
 ## 配置与接口
 
@@ -133,8 +165,23 @@ scan_planner_node:
 关键点记录器现在是原生的 `rclpy` 可执行程序：
 
 ```bash
-ros2 run scan_planner keypoint_recorder.py --output keypoints.yaml
+ros2 run scan_planner keypoint_recorder.py \
+  --odom /state_estimation \
+  --output keypoints.yaml
 ```
+
+记录器会把当前 odom 位置保存为 `fsm.waypoints` 参数文件。上板使用 `navi_mode=2` 时传入：
+
+```bash
+ros2 launch scan_planner run.launch.py \
+  is_real_world:=true \
+  navi_mode:=2 \
+  keypoints_file:=/absolute/path/to/keypoints.yaml \
+  publish_robot_description:=false \
+  use_zsibot_bridge:=true
+```
+
+waypoint 坐标是 `odom` 坐标系下的绝对坐标。
 
 ## Gazebo Fortress / Go2 仿真
 

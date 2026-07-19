@@ -1,0 +1,10 @@
+{
+  "build": {
+    "orin-nx": {
+      "cmake-args": [
+        "-DCMAKE_TOOLCHAIN_FILE=tools/cross/orin_nx_toolchain.cmake",
+        "-DCMAKE_BUILD_TYPE=Release"
+      ]
+    }
+  }
+}

@@ -16,11 +16,13 @@ def _as_bool(value):
 
 def _setup(context):
     scan_share = get_package_share_directory("scan_planner")
-    go2_share = get_package_share_directory("go2_description")
     planner_yaml = os.path.join(scan_share, "config", "planner.yaml")
     controllers_yaml = os.path.join(scan_share, "config", "controllers.yaml")
     is_real = _as_bool(LaunchConfiguration("is_real_world").perform(context))
     use_sim_time = _as_bool(LaunchConfiguration("use_sim_time").perform(context))
+    publish_robot_description = _as_bool(
+        LaunchConfiguration("publish_robot_description").perform(context)
+    )
     sensor_type = LaunchConfiguration("sensor_type").perform(context)
     controller_mode = LaunchConfiguration("controller_mode").perform(context)
     keypoints_file = LaunchConfiguration("keypoints_file").perform(context)
@@ -95,23 +97,25 @@ def _setup(context):
             ],
         )
     ]
-    actions.append(
-        Node(
-            package="robot_state_publisher",
-            executable="robot_state_publisher",
-            name="go2_robot_state_publisher",
-            output="screen",
-            parameters=[
-                common,
-                {
-                    "robot_description": Command(
-                        ["xacro ", os.path.join(go2_share, "xacro", "robot.xacro"),
-                         " use_gazebo:=false"]
-                    )
-                },
-            ],
+    if publish_robot_description:
+        go2_share = get_package_share_directory("go2_description")
+        actions.append(
+            Node(
+                package="robot_state_publisher",
+                executable="robot_state_publisher",
+                name="go2_robot_state_publisher",
+                output="screen",
+                parameters=[
+                    common,
+                    {
+                        "robot_description": Command(
+                            ["xacro ", os.path.join(go2_share, "xacro", "robot.xacro"),
+                             " use_gazebo:=false"]
+                        )
+                    },
+                ],
+            )
         )
-    )
 
     if controller_mode == "open_loop":
         actions.append(
@@ -227,6 +231,7 @@ def generate_launch_description():
             DeclareLaunchArgument("use_gpu", default_value="false"),
             DeclareLaunchArgument("use_pcd_map", default_value="false"),
             DeclareLaunchArgument("pcd_map_file", default_value=""),
+            DeclareLaunchArgument("publish_robot_description", default_value="true"),
             DeclareLaunchArgument("use_zsibot_bridge", default_value="false"),
             DeclareLaunchArgument("zsibot_config_file", default_value=""),
             DeclareLaunchArgument("real_body_pose_topic", default_value="/state_estimation"),
