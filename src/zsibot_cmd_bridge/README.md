@@ -42,7 +42,9 @@ cd ~/SCAN-Planner
 source /opt/ros/humble/setup.bash
 
 colcon build --symlink-install \
-  --packages-up-to scan_planner zsibot_cmd_bridge \
+  --packages-select \
+  scan_planner_msgs plan_env path_searching bspline_opt traj_utils \
+  go2_description scan_planner zsibot_cmd_bridge \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 

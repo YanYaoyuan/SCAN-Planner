@@ -104,15 +104,19 @@ cd ~/SCAN-Planner
 source /opt/ros/humble/setup.bash
 
 colcon build --symlink-install \
-  --packages-up-to scan_planner zsibot_cmd_bridge \
+  --packages-select \
+  scan_planner_msgs plan_env path_searching bspline_opt traj_utils \
+  go2_description scan_planner zsibot_cmd_bridge \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
 说明：
 
-- `--packages-up-to scan_planner zsibot_cmd_bridge` 会编译这两个包及其工作区依赖。
+- 这是真机最小编译集合，不会编译 `local_sensing_node`、`mockamap`、`map_generator` 等仿真包。
 - 默认编译 `zsl-1w`。
 - 如果以后换成点足版本，增加 `-DZSIBOT_MODEL=zsl-1`。
+
+不要在 Orin 真机部署时使用 `--packages-up-to scan_planner`，它会把仿真相关运行依赖也拉进来，可能因为 `glm`、Gazebo、RViz 等桌面依赖失败。
 
 编译成功后：
 
