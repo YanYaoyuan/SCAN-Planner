@@ -84,6 +84,34 @@ ros2 launch scan_planner run.launch.py \
 
 实际硬件部署时，激光惯导里程计（LIO）、相机和宇树（Unitree）驱动均为外部依赖，默认启动会将规划器输入映射到 `/LIO/odom_vehicle`、`/LIO/odom_imu`、`/LIO/clouds_lidar` 话题以及 RealSense 对齐深度图话题，可根据实际安装的驱动栈修改话题重映射配置。
 
+### ZsiBot 机器狗桥接
+
+仓库提供 `zsibot_cmd_bridge`，用于将规划器输出的 `/cmd_vel` 转发到 ZsiBot HighLevel SDK：
+
+```bash
+colcon build --symlink-install --packages-select zsibot_cmd_bridge \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
+
+默认型号为轮足 `zsl-1w`。点足型号可增加 `-DZSIBOT_MODEL=zsl-1`。默认 SDK 根目录为仓库根目录下的 `zsibot_sdk`，如 SDK 放在其他路径，可增加 `-DZSIBOT_SDK_ROOT=/absolute/path/to/zsibot_sdk`。
+
+Orin NX 运行桥接节点：
+
+```bash
+ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
+```
+
+或随真机规划一起启动：
+
+```bash
+ros2 launch scan_planner run.launch.py \
+  is_real_world:=true controller_mode:=closed_loop use_zsibot_bridge:=true
+```
+
+桥接参数位于 `src/zsibot_cmd_bridge/config/zsibot_cmd_bridge.yaml`。其中 `local_ip` 是 Orin NX 在机器人控制网段的 IP，`dog_ip` 是 RK3588 运动控制板 IP。当前默认值适配 Orin NX `192.168.234.234`、RK3588 `192.168.234.1`。RK3588 侧还需要将 `/opt/export/config/sdk_config.yaml` 的 `target_ip` 配成 Orin NX 的 IP，`target_port` 与桥接节点 `local_port` 保持一致。
+
+完整双板部署、冒烟测试和故障排查见 `src/zsibot_cmd_bridge/README.md`。
+
 ## 配置与接口
 
 规划器、控制器和仿真器的参数分别位于：

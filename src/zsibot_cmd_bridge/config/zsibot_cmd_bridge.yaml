@@ -1,0 +1,18 @@
+zsibot_cmd_bridge:
+  ros__parameters:
+    local_ip: "192.168.234.234"
+    dog_ip: "192.168.234.1"
+    local_port: 43988
+    publish_rate: 50.0
+    cmd_timeout: 0.3
+    max_vx: 0.75
+    max_vy: 0.35
+    max_yaw_rate: 1.0
+    deadband_vx: 0.0
+    deadband_vy: 0.0
+    deadband_yaw_rate: 0.0
+    auto_stand: true
+    send_zero_on_start: true
+    require_connection: false
+    log_sdk_status: true
+    status_log_period: 2.0

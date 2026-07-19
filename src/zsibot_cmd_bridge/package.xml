@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>zsibot_cmd_bridge</name>
+  <version>0.1.0</version>
+  <description>Bridge ROS 2 cmd_vel commands to the ZsiBot HighLevel SDK.</description>
+  <maintainer email="iszhouxin@zju.edu.cn">SCAN-Planner maintainers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>rclcpp</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export><build_type>ament_cmake</build_type></export>
+</package>

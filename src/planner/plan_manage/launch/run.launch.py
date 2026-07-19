@@ -24,6 +24,8 @@ def _setup(context):
     sensor_type = LaunchConfiguration("sensor_type").perform(context)
     controller_mode = LaunchConfiguration("controller_mode").perform(context)
     keypoints_file = LaunchConfiguration("keypoints_file").perform(context)
+    use_zsibot_bridge = _as_bool(LaunchConfiguration("use_zsibot_bridge").perform(context))
+    zsibot_config_file = LaunchConfiguration("zsibot_config_file").perform(context)
     navi_mode = int(LaunchConfiguration("navi_mode").perform(context))
     if sensor_type not in ("lidar", "depth"):
         raise RuntimeError("sensor_type must be 'lidar' or 'depth'")
@@ -37,10 +39,13 @@ def _setup(context):
         )
 
     if is_real:
-        body_pose = "/LIO/odom_vehicle"
-        sensor_pose = "/LIO/odom_imu"
-        cloud = "/LIO/clouds_lidar"
-        depth = "/camera/aligned_depth_to_color/image_raw"
+        body_pose = LaunchConfiguration("real_body_pose_topic").perform(context)
+        sensor_pose = LaunchConfiguration("real_sensor_pose_topic").perform(context)
+        cloud = LaunchConfiguration("real_cloud_topic").perform(context)
+        depth = LaunchConfiguration("real_depth_topic").perform(context)
+        cmd_vel = LaunchConfiguration("real_cmd_vel_topic").perform(context)
+        goal = LaunchConfiguration("goal_topic").perform(context)
+        initial_path = LaunchConfiguration("initial_path_topic").perform(context)
         cloud_is_world = False
         need_extrinsic = True
         intrinsics = {
@@ -54,6 +59,9 @@ def _setup(context):
         sensor_pose = "/quad_0/camera_pose" if sensor_type == "depth" else "/quad_0/lidar_pose"
         cloud = "/quad_0/cloud"
         depth = "/quad_0/depth"
+        cmd_vel = "/quad_0/cmd_vel"
+        goal = "/move_base_simple/goal"
+        initial_path = "/initial_path"
         cloud_is_world = True
         need_extrinsic = False
         intrinsics = {}
@@ -79,8 +87,8 @@ def _setup(context):
                 ("sensor_pose", sensor_pose),
                 ("cloud", cloud),
                 ("depth", depth),
-                ("move_base_simple/goal", "/move_base_simple/goal"),
-                ("initial_path", "/initial_path"),
+                ("move_base_simple/goal", goal),
+                ("initial_path", initial_path),
             ],
         )
     ]
@@ -126,10 +134,26 @@ def _setup(context):
                 parameters=[controllers_yaml, common],
                 remappings=[
                     ("body_pose", body_pose),
-                    ("cmd_vel", "/cmd_vel" if is_real else "/quad_0/cmd_vel"),
+                    ("cmd_vel", cmd_vel),
                 ],
             )
         )
+        if is_real and use_zsibot_bridge:
+            if not zsibot_config_file:
+                zsibot_share = get_package_share_directory("zsibot_cmd_bridge")
+                zsibot_config_file = os.path.join(
+                    zsibot_share, "config", "zsibot_cmd_bridge.yaml"
+                )
+            actions.append(
+                Node(
+                    package="zsibot_cmd_bridge",
+                    executable="zsibot_cmd_bridge",
+                    name="zsibot_cmd_bridge",
+                    output="screen",
+                    parameters=[zsibot_config_file, common],
+                    remappings=[("cmd_vel", cmd_vel)],
+                )
+            )
         if not is_real:
             actions.append(
                 Node(
@@ -200,6 +224,15 @@ def generate_launch_description():
             DeclareLaunchArgument("use_gpu", default_value="false"),
             DeclareLaunchArgument("use_pcd_map", default_value="false"),
             DeclareLaunchArgument("pcd_map_file", default_value=""),
+            DeclareLaunchArgument("use_zsibot_bridge", default_value="false"),
+            DeclareLaunchArgument("zsibot_config_file", default_value=""),
+            DeclareLaunchArgument("real_body_pose_topic", default_value="/LIO/odom_vehicle"),
+            DeclareLaunchArgument("real_sensor_pose_topic", default_value="/LIO/odom_imu"),
+            DeclareLaunchArgument("real_cloud_topic", default_value="/LIO/clouds_lidar"),
+            DeclareLaunchArgument("real_depth_topic", default_value="/camera/aligned_depth_to_color/image_raw"),
+            DeclareLaunchArgument("real_cmd_vel_topic", default_value="/cmd_vel"),
+            DeclareLaunchArgument("goal_topic", default_value="/move_base_simple/goal"),
+            DeclareLaunchArgument("initial_path_topic", default_value="/initial_path"),
             DeclareLaunchArgument("map_size_x", default_value="40.0"),
             DeclareLaunchArgument("map_size_y", default_value="40.0"),
             DeclareLaunchArgument("map_size_z", default_value="5.0"),
