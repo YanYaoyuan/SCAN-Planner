@@ -2,6 +2,9 @@
 #include <plan_manage/scan_replan_fsm.h>
 #include <cmath>
 #include <stdexcept>
+#include <tf2/exceptions.h>
+#include <tf2/time.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace
 {
@@ -46,6 +49,12 @@ namespace scan_planner
     self_double_cylinder_offset_ = load_parameter<double>(node_, "grid_map.double_cylinder_offset", 0.0);
     body_height_ = load_parameter<double>(node_, "grid_map.body_height", 0.4);
     self_inflation_frame_id_ = load_parameter<std::string>(node_, "grid_map.frame_id", "world");
+    goal_frame_id_ = load_parameter<std::string>(node_, "fsm.goal_frame_id", self_inflation_frame_id_);
+    goal_transform_timeout_ = load_parameter<double>(node_, "fsm.goal_transform_timeout", 0.2);
+    if (goal_frame_id_.empty())
+      goal_frame_id_ = self_inflation_frame_id_;
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
     if (navi_mode_ == NAVI_MODE::PRESET_TARGET)
     {
@@ -131,9 +140,13 @@ namespace scan_planner
       return;
     }
 
+    geometry_msgs::msg::PoseStamped goal;
+    if (!transformPoseToGoalFrame(*msg, goal))
+      return;
+
     auto path = std::make_shared<nav_msgs::msg::Path>();
-    path->header = msg->header;
-    path->poses.push_back(*msg);
+    path->header = goal.header;
+    path->poses.push_back(goal);
     waypointCallback(path);
   }
 
@@ -146,15 +159,18 @@ namespace scan_planner
       return;
     }
 
-    if (msg->poses[0].pose.position.z < -0.1)
-      return;
-
     cout << "Triggered!" << endl;
     trigger_ = true;
     init_pt_ = odom_pos_;
 
     bool success = false;
-    end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, rviz_goal_height_;
+    geometry_msgs::msg::PoseStamped goal;
+    if (!transformPoseToGoalFrame(msg->poses[0], goal))
+      return;
+    if (goal.pose.position.z < -0.1)
+      return;
+
+    end_pt_ << goal.pose.position.x, goal.pose.position.y, rviz_goal_height_;
     success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
     if (success)
@@ -336,6 +352,42 @@ namespace scan_planner
     return false;
   }
 
+  bool SCANReplanFSM::transformPoseToGoalFrame(const geometry_msgs::msg::PoseStamped &input,
+                                               geometry_msgs::msg::PoseStamped &output) const
+  {
+    output = input;
+    if (goal_frame_id_.empty())
+      return true;
+
+    if (output.header.frame_id.empty())
+    {
+      output.header.frame_id = goal_frame_id_;
+      RCLCPP_WARN(node_->get_logger(), "Goal has empty frame_id; assuming '%s'",
+                  goal_frame_id_.c_str());
+      return true;
+    }
+
+    if (output.header.frame_id == goal_frame_id_)
+      return true;
+
+    try
+    {
+      output = tf_buffer_->transform(
+          input, goal_frame_id_, tf2::durationFromSec(std::max(0.0, goal_transform_timeout_)));
+      RCLCPP_INFO(node_->get_logger(), "Transformed goal from '%s' to '%s'",
+                  input.header.frame_id.c_str(), goal_frame_id_.c_str());
+      return true;
+    }
+    catch (const tf2::TransformException &ex)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Reject goal in frame '%s': cannot transform to planner frame '%s': %s",
+          input.header.frame_id.c_str(), goal_frame_id_.c_str(), ex.what());
+      return false;
+    }
+  }
+
   void SCANReplanFSM::pathCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg)
   {
     if (!msg || msg->poses.empty())
@@ -352,10 +404,17 @@ namespace scan_planner
 
     for (const auto& pose_stamped : msg->poses)
     {
+      geometry_msgs::msg::PoseStamped transformed_pose;
+      geometry_msgs::msg::PoseStamped input_pose = pose_stamped;
+      if (input_pose.header.frame_id.empty())
+        input_pose.header.frame_id = msg->header.frame_id;
+      if (!transformPoseToGoalFrame(input_pose, transformed_pose))
+        return;
+
       Eigen::Vector3d wp;
-      wp(0) = pose_stamped.pose.position.x;
-      wp(1) = pose_stamped.pose.position.y;
-      wp(2) = pose_stamped.pose.position.z + body_height_; // Adjust for body height
+      wp(0) = transformed_pose.pose.position.x;
+      wp(1) = transformed_pose.pose.position.y;
+      wp(2) = transformed_pose.pose.position.z + body_height_; // Adjust for body height
       waypoints.push_back(wp);
     }
     bool success = planGlobalTrajByWaypoints(waypoints);
@@ -860,6 +919,8 @@ namespace scan_planner
 
       /* publish traj */
       scan_planner_msgs::msg::Bspline bspline;
+      bspline.header.stamp = info->start_time_;
+      bspline.header.frame_id = self_inflation_frame_id_;
       bspline.order = 3;
       bspline.start_time = info->start_time_;
       bspline.traj_id = info->traj_id_;
@@ -899,6 +960,8 @@ namespace scan_planner
 
     /* publish traj */
     scan_planner_msgs::msg::Bspline bspline;
+    bspline.header.stamp = info->start_time_;
+    bspline.header.frame_id = self_inflation_frame_id_;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
     bspline.traj_id = info->traj_id_;

@@ -11,7 +11,9 @@ fi
 
 if [[ -f /opt/ros/humble/setup.bash ]]; then
   # shellcheck disable=SC1091
+  set +u
   source /opt/ros/humble/setup.bash
+  set -u
 fi
 
 cd "${WORKSPACE}"

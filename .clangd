@@ -1,0 +1,7 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - -std=gnu++17
+
+Index:
+  Background: Build

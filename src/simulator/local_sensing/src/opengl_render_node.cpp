@@ -911,10 +911,10 @@ void renderSensedPoints() {
   transform.transform.translation.x = pos.x();
   transform.transform.translation.y = pos.y();
   transform.transform.translation.z = pos.z();
-  transform.transform.rotation.x = q.x();
-  transform.transform.rotation.y = q.y();
-  transform.transform.rotation.z = q.z();
-  transform.transform.rotation.w = q.w();
+  transform.transform.rotation.x = quat.x();
+  transform.transform.rotation.y = quat.y();
+  transform.transform.rotation.z = quat.z();
+  transform.transform.rotation.w = quat.w();
 
   tf_broadcaster->sendTransform(transform);
 

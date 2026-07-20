@@ -1967,10 +1967,12 @@ shared(use_avia_pattern, use_vlp32_pattern, use_minicf_pattern, is_360lidar,    
   transform.transform.translation.x = pos.x();
   transform.transform.translation.y = pos.y();
   transform.transform.translation.z = pos.z();
-  transform.transform.rotation.x = q.x();
-  transform.transform.rotation.y = q.y();
-  transform.transform.rotation.z = q.z();
-  transform.transform.rotation.w = q.w();
+  Eigen::Quaterniond sensor_q(rot);
+  sensor_q.normalize();
+  transform.transform.rotation.x = sensor_q.x();
+  transform.transform.rotation.y = sensor_q.y();
+  transform.transform.rotation.z = sensor_q.z();
+  transform.transform.rotation.w = sensor_q.w();
 
   tf_broadcaster->sendTransform(transform);
 

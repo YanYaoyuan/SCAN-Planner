@@ -8,9 +8,9 @@ zsibot_cmd_bridge:
     max_vx: 0.3
     max_vy: 0.15
     max_yaw_rate: 0.5
-    deadband_vx: 0.0
-    deadband_vy: 0.0
-    deadband_yaw_rate: 0.0
+    deadband_vx: 0.05
+    deadband_vy: 0.10
+    deadband_yaw_rate: 0.10
     auto_stand: true
     require_standing_before_move: true
     standup_check_period: 0.2

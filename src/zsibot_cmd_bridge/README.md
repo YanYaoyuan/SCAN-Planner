@@ -1,7 +1,7 @@
 # ZsiBot Cmd Bridge Deployment
 
 `zsibot_cmd_bridge` provides two ways to drive a ZsiBot robot from ROS 2
-`/cmd_vel`:
+velocity commands:
 
 - Direct bridge: run the ZsiBot SDK client on the Orin NX.
 - UDP proxy: run a ROS 2 UDP client on the Orin NX and a non-ROS SDK proxy on
@@ -30,7 +30,7 @@ target_port: 43988
 Runtime chain:
 
 ```text
-Orin ROS 2 /cmd_vel
+Orin ROS 2 /scan_planner/cmd_vel
   -> zsibot_cmd_udp_client
   -> UDP 192.168.234.1:44000
   -> RK zsibot_sdk_proxy
@@ -48,7 +48,8 @@ Start the ROS 2 UDP client on Orin NX:
 
 ```bash
 source install/setup.bash
-ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py
+ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py \
+  cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 Or start it together with the real planner:
@@ -58,7 +59,8 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_udp_client:=true
+  use_zsibot_udp_client:=true \
+  real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 The Orin-side UDP client config is `config/zsibot_cmd_udp_client.yaml`.
@@ -124,26 +126,35 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   controller_mode:=closed_loop \
   use_zsibot_bridge:=true \
-  real_body_pose_topic:=/state_estimation \
+  use_lidar_to_body_odom:=true \
+  lidar_odom_topic:=/state_estimation \
+  body_odom_topic:=/body_state_estimation \
+  body_odom_frame_id:=base_link \
+  body_odom_sensor_frame_id:=livox_frame \
+  body_odom_world_frame_id:=lio_odom \
+  body_odom_publish_tf:=false \
   real_sensor_pose_topic:=/state_estimation \
   real_cloud_topic:=/cloud_registered \
-  real_grid_frame_id:=odom \
+  real_grid_frame_id:=lio_odom \
   real_cloud_is_world:=true \
   real_need_extrinsic:=false \
   real_depth_topic:=/your/depth/image \
-  real_cmd_vel_topic:=/cmd_vel
+  goal_frame_id:=lio_odom \
+  real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 Topic meanings:
 
 | Launch argument | Expected type | Used by |
 | --- | --- | --- |
-| `real_body_pose_topic` | `nav_msgs/Odometry` | planner FSM, sliding map, closed-loop controller |
+| `use_lidar_to_body_odom` | bool | enables `/state_estimation` lidar odom to `/body_state_estimation` conversion |
+| `body_odom_topic` | `nav_msgs/Odometry` | generated body odom topic when `use_lidar_to_body_odom:=true` |
+| `real_body_pose_topic` | `nav_msgs/Odometry` | planner body odom when `use_lidar_to_body_odom:=false` |
 | `real_sensor_pose_topic` | `nav_msgs/Odometry` | lidar/depth sensor pose for map fusion |
 | `real_cloud_topic` | `sensor_msgs/PointCloud2` | lidar obstacle input |
 | `real_depth_topic` | `sensor_msgs/Image` | depth obstacle input when `sensor_type:=depth` |
 | `real_cmd_vel_topic` | `geometry_msgs/Twist` | controller output and ZsiBot bridge input |
-| `real_grid_frame_id` | string | occupancy map frame, `odom` for the current FAST_LIO config |
+| `real_grid_frame_id` | string | occupancy map frame, usually `lio_odom` after isolating FAST_LIO from chassis odom |
 | `real_cloud_is_world` | bool | `true` for FAST_LIO `/cloud_registered` |
 | `real_need_extrinsic` | bool | `false` when `real_sensor_pose_topic` is already sensor pose |
 | `goal_topic` | `geometry_msgs/PoseStamped` | RViz/navigation goal when `navi_mode:=1` |
@@ -176,14 +187,16 @@ Or start only the direct bridge:
 
 ```bash
 source install/setup.bash
-ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
+ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py \
+  cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 For UDP proxy mode, start only the Orin UDP client:
 
 ```bash
 source install/setup.bash
-ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py
+ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py \
+  cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 ## Smoke Test
@@ -199,20 +212,20 @@ Then run either the direct bridge or the UDP client/proxy pair and publish a
 small velocity command:
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+ros2 topic pub --rate 20 /scan_planner/cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.1, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
 Stop the robot:
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+ros2 topic pub --once /scan_planner/cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
 Keep the command small during first tests. Both the direct bridge and UDP proxy
 republish the last command at `publish_rate` and send zero velocity when
-`/cmd_vel` times out.
+the subscribed cmd_vel topic times out.
 
 ## Runtime Logs
 
@@ -253,10 +266,13 @@ requires `move()` to be called in standing state.
 | `dog_ip` | `192.168.234.1` | RK3588 / robot IP |
 | `local_port` | `43988` | Must match RK3588 `target_port` |
 | `publish_rate` | `50.0` | SDK command resend rate |
-| `cmd_timeout` | `0.3` | Send zero if `/cmd_vel` is stale |
+| `cmd_timeout` | `0.3` | Send zero if the subscribed cmd_vel topic is stale |
 | `max_vx` | `0.3` | Conservative first-deployment limit |
 | `max_vy` | `0.15` | Conservative first-deployment limit |
 | `max_yaw_rate` | `0.5` | Conservative first-deployment limit |
+| `deadband_vx` | `0.05` | Send 0 below the ZSL-1w minimum accepted x speed |
+| `deadband_vy` | `0.10` | Send 0 below the ZSL-1w minimum accepted y speed |
+| `deadband_yaw_rate` | `0.10` | Send 0 below the ZSL-1w minimum accepted yaw rate |
 | `auto_stand` | `true` | Calls `standUp()` on startup |
 | `require_standing_before_move` | `true` | Blocks `move()` until SDK reports standing/move mode |
 | `standup_check_period` | `0.2` | Seconds between ctrlmode checks while standing up |

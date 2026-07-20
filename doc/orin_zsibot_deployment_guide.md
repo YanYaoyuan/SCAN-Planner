@@ -17,7 +17,7 @@ LIO / Sensor Driver
   -> odom / sensor_pose / cloud / depth
 
 SCAN-Planner on Orin NX
-  -> /cmd_vel
+  -> /scan_planner/cmd_vel
 
 方案 A，不修改 RK 配置：
 zsibot_cmd_udp_client on Orin NX
@@ -34,7 +34,7 @@ RK3588 motion_control
   -> motors / gait controller
 ```
 
-`/cmd_vel` 是最终控制机器狗的速度命令。`/planning/bspline` 是规划器内部轨迹输出，不能直接接机器狗底层。
+`/scan_planner/cmd_vel` 是本工程默认使用的隔离速度命令。`/planning/bspline` 是规划器内部轨迹输出，不能直接接机器狗底层。只有明确选择机器狗原生 `ecal2ros2` 控制通道时，才让 planner 直接发布 `/cmd_vel`。
 
 ## 2. Clone 代码
 
@@ -105,7 +105,7 @@ cd /app/rk_proxy
 它会在 RK 上监听 `0.0.0.0:44000`，收到 Orin 的 UDP 速度包后，在 RK 本机调用 SDK：
 
 ```text
-Orin /cmd_vel -> UDP 192.168.234.1:44000 -> RK proxy -> SDK 127.0.0.1:43988
+Orin /scan_planner/cmd_vel -> UDP 192.168.234.1:44000 -> RK proxy -> SDK 127.0.0.1:43988
 ```
 
 Orin 侧使用 `zsibot_cmd_udp_client` 或 `run_real_planner_udp.sh`。这条链路不需要改 `/opt/export/config/sdk_config.yaml`，但 RK 上必须保持 `zsibot_sdk_proxy` 进程运行。
@@ -207,21 +207,69 @@ Planner 需要：
 | 雷达点云 | `sensor_msgs/PointCloud2` |
 | 深度图 | `sensor_msgs/Image` |
 
+### 6.4 真机 TF、时间和控制链路
+
+发送 goal 前先确认这三件事，否则 Foxglove/RViz 里看起来能规划，实际控制会很危险。
+
+第一，SLAM odom 和底盘 odom 不能都叫 `odom`。你当前 FAST_LIO 配置在：
+
+```text
+/home/user/robot/omni_slam/FAST_LIO/config/omni_dog.yaml
+/home/user/robot/omni_slam/FAST_LIO/config/omni_dog_relocalization.yaml
+```
+
+关键项是：
+
+```yaml
+common:
+  odom_frame_id: "odom"
+  sensor_frame_id: "livox_frame"
+  base_frame_id: "livox_frame"
+  send_odom_base_tf: false
+```
+
+如果机器狗 `/robot_tf` 已经发布 `odom -> base_link`，建议把 FAST_LIO 的
+`common.odom_frame_id` 改成 `lio_odom`，然后重启 SLAM。之后 SCAN-Planner
+也用 `real_grid_frame_id:=lio_odom` 和 `goal_frame_id:=lio_odom`。
+
+第二，FAST_LIO 的 `/state_estimation.child_frame_id` 是 `livox_frame`，它是激光，不是机身中心。新版本提供 `lidar_to_body_odom` 节点，可以从 `/state_estimation` 生成 `/body_state_estimation`。参数 `body_to_sensor_*` 是 `base_link -> livox_frame` 外参，单位是米和弧度；没量准外参前不要发导航 goal。
+
+第三，控制链路只能保留一条。新版本脚本默认让 planner 输出 `/scan_planner/cmd_vel`，再由 `zsibot_cmd_bridge` 或 `zsibot_cmd_udp_client` 订阅这个隔离话题。这样即使机器狗系统里还有 `ecal2ros2` 订阅 `/cmd_vel`，也不会同时收到 planner 的速度。
+
+检查命令：
+
+```bash
+ros2 topic info /cmd_vel
+ros2 topic info /scan_planner/cmd_vel
+ros2 topic echo /state_estimation --once
+ros2 topic echo /body_state_estimation --once
+```
+
+如果系统时间还是 `1970-01-01`，先修时间再看 TF：
+
+```bash
+timedatectl
+sudo timedatectl set-ntp true
+sudo hwclock --systohc
+```
+
+没有外网或没有电池 RTC 时，需要用板端可用的 NTP/GPS/PPS/RK 时间源做 systemd 启动同步；否则 ROS/TF 时间戳会停留在开机秒数，Foxglove 和 TF 缓存都可能异常。
+
 ## 7. 启动 Planner + Bridge
 
-当前 SCAN-Planner 真机默认值已经适配 FAST_LIO 的 `omni_dog.launch.py`
-和 `omni_dog_relocalization.launch.py`：
+原始 SCAN-Planner 真机默认值可以直接接 FAST_LIO 的 `omni_dog.launch.py`
+和 `omni_dog_relocalization.launch.py`，但它把激光位姿同时当作机身位姿，只适合不运动的联调：
 
 | SCAN-Planner launch 参数 | 默认值 | 来源 |
 | --- | --- | --- |
-| `real_body_pose_topic` | `/state_estimation` | FAST_LIO `/Odometry` remap |
+| `real_body_pose_topic` | `/state_estimation` | FAST_LIO `/Odometry` remap，不推荐真机闭环 |
 | `real_sensor_pose_topic` | `/state_estimation` | FAST_LIO 里 `base_frame_id == sensor_frame_id == livox_frame` |
 | `real_cloud_topic` | `/cloud_registered` | FAST_LIO 世界系点云 |
 | `real_grid_frame_id` | `odom` | FAST_LIO `common.odom_frame_id` |
 | `real_cloud_is_world` | `true` | `/cloud_registered` 已转到 odom/world 系 |
 | `real_need_extrinsic` | `false` | 使用 FAST_LIO 发布的传感器位姿 |
 
-因此 FAST_LIO 已启动后，推荐先按“不修改 RK 配置”的 UDP proxy 方式运行。
+真机闭环推荐使用“SLAM odom 隔离 + `/body_state_estimation` + `/scan_planner/cmd_vel`”方式运行。
 
 先在 RK3588 上保持 proxy 运行：
 
@@ -230,7 +278,8 @@ cd /app/rk_proxy
 ./run_zsibot_sdk_proxy.sh
 ```
 
-再在 Orin NX 上启动 planner：
+再在 Orin NX 上启动 planner。下面示例假设已经把 FAST_LIO 的 `common.odom_frame_id`
+改成了 `lio_odom`：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -241,8 +290,30 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_udp_client:=true
+  use_zsibot_udp_client:=true \
+  use_lidar_to_body_odom:=true \
+  lidar_odom_topic:=/state_estimation \
+  body_odom_topic:=/body_state_estimation \
+  body_odom_frame_id:=base_link \
+  body_odom_sensor_frame_id:=livox_frame \
+  body_odom_world_frame_id:=lio_odom \
+  body_odom_publish_tf:=false \
+  body_to_sensor_x:=0.0 \
+  body_to_sensor_y:=0.0 \
+  body_to_sensor_z:=0.0 \
+  body_to_sensor_roll:=0.0 \
+  body_to_sensor_pitch:=0.0 \
+  body_to_sensor_yaw:=0.0 \
+  real_sensor_pose_topic:=/your/state_estimation \
+  real_cloud_topic:=/cloud_registered \
+  real_grid_frame_id:=lio_odom \
+  real_cloud_is_world:=true \
+  real_need_extrinsic:=false \
+  goal_frame_id:=lio_odom \
+  real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
+
+把 `body_to_sensor_*` 的 0 改成真实 `base_link -> livox_frame` 外参。`body_odom_publish_tf:=false` 是故意的：它只给 planner 发布 odometry，不再发布一条新的 `lio_odom -> base_link` TF，避免和机器狗自带 `robot_tf` 重复。
 
 如果现场 FAST_LIO 输出被改名，启动时传参：
 
@@ -253,13 +324,20 @@ ros2 launch scan_planner run.launch.py \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
   use_zsibot_udp_client:=true \
-  real_body_pose_topic:=/state_estimation \
+  use_lidar_to_body_odom:=true \
+  lidar_odom_topic:=/your/state_estimation \
+  body_odom_topic:=/body_state_estimation \
+  body_odom_frame_id:=base_link \
+  body_odom_sensor_frame_id:=livox_frame \
+  body_odom_world_frame_id:=lio_odom \
+  body_odom_publish_tf:=false \
   real_sensor_pose_topic:=/state_estimation \
-  real_cloud_topic:=/cloud_registered \
-  real_grid_frame_id:=odom \
+  real_cloud_topic:=/your/cloud_registered \
+  real_grid_frame_id:=lio_odom \
   real_cloud_is_world:=true \
   real_need_extrinsic:=false \
-  real_cmd_vel_topic:=/cmd_vel
+  goal_frame_id:=lio_odom \
+  real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 深度相机模式：
@@ -274,7 +352,7 @@ ros2 launch scan_planner run.launch.py \
   real_body_pose_topic:=/your/robot/odom \
   real_sensor_pose_topic:=/your/camera/odom \
   real_depth_topic:=/your/depth/image \
-  real_cmd_vel_topic:=/cmd_vel
+  real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 如果使用“直接桥接”方案，则把上面命令里的 `use_zsibot_udp_client:=true` 改成 `use_zsibot_bridge:=true`，并确认 RK3588 的 `/opt/export/config/sdk_config.yaml` 已经把 `target_ip` 改成 Orin NX 的 IP。
@@ -297,7 +375,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 ros2 run scan_planner keypoint_recorder.py \
-  --odom /state_estimation \
+  --odom /body_state_estimation \
   --output /app/scan_planner_orin_nx_aarch64_20260719/keypoints.yaml
 ```
 
@@ -321,7 +399,7 @@ scan_planner_node:
     fsm.waypoints: [0.5, 0, 0.3, 1.0, 0, 0.3]
 ```
 
-这些点是 `odom` 坐标系下的绝对坐标，不是相对移动量。记录点时脚本直接读取 `/state_estimation.pose.pose.position`。
+这些点是 `lio_odom` 坐标系下的绝对坐标，不是相对移动量。记录点时脚本直接读取 `/body_state_estimation.pose.pose.position`。
 
 用录好的 waypoint 跑预设路线：
 
@@ -334,12 +412,26 @@ ros2 launch scan_planner run.launch.py \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
   use_zsibot_udp_client:=true \
-  real_body_pose_topic:=/state_estimation \
+  use_lidar_to_body_odom:=true \
+  lidar_odom_topic:=/state_estimation \
+  body_odom_topic:=/body_state_estimation \
+  body_odom_frame_id:=base_link \
+  body_odom_sensor_frame_id:=livox_frame \
+  body_odom_world_frame_id:=lio_odom \
+  body_odom_publish_tf:=false \
+  body_to_sensor_x:=0.0 \
+  body_to_sensor_y:=0.0 \
+  body_to_sensor_z:=0.0 \
+  body_to_sensor_roll:=0.0 \
+  body_to_sensor_pitch:=0.0 \
+  body_to_sensor_yaw:=0.0 \
   real_sensor_pose_topic:=/state_estimation \
   real_cloud_topic:=/cloud_registered \
-  real_grid_frame_id:=odom \
+  real_grid_frame_id:=lio_odom \
   real_cloud_is_world:=true \
-  real_need_extrinsic:=false
+  real_need_extrinsic:=false \
+  goal_frame_id:=lio_odom \
+  real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 启动后，planner 收到第一帧 `/state_estimation` 就会开始规划到第一个 waypoint。接近当前 waypoint 约 `0.5m`，或者当前段轨迹执行结束后，会自动切到下一个 waypoint。
@@ -443,17 +535,18 @@ cd /app/rk_proxy
 source /opt/ros/humble/setup.bash
 source ~/SCAN-Planner/install/setup.bash
 
-ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py
+ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py \
+  cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 另一个 Orin 终端发送小速度：
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+ros2 topic pub --rate 20 /scan_planner/cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.05, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
-RK proxy 日志里 `seq` 递增、`connected=true`，并且机器狗能站立/低速动/停住，就说明链路通了。
+按 `Ctrl-C` 停止发布后，client 会因为超时自动发送零速度。RK proxy 日志里 `seq` 递增、`connected=true`，并且机器狗能站立/低速动/停住，就说明链路通了。
 
 ### 9.2 直接 bridge 模式
 
@@ -463,20 +556,21 @@ RK proxy 日志里 `seq` 递增、`connected=true`，并且机器狗能站立/�
 source /opt/ros/humble/setup.bash
 source ~/SCAN-Planner/install/setup.bash
 
-ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
+ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py \
+  cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
 另一个终端发送小速度：
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+ros2 topic pub --rate 20 /scan_planner/cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.1, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
 停止：
 
 ```bash
-ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+ros2 topic pub --once /scan_planner/cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
@@ -591,6 +685,25 @@ target_port: 43988
 如果日志持续出现：
 
 ```text
+invalid velocity in x-axi, expect -3.7~-0.05/0.05~3.7m/s
+invalid velocity in y-axi, expect -1~-0.1/0.1~1.0m/s
+```
+
+说明 SDK 收到了非零但低于最小有效值的速度。`zsl-1w` 的 `move()`
+要求小速度要么传 0，要么超过最小门槛。bridge 配置里应保持：
+
+```yaml
+deadband_vx: 0.05
+deadband_vy: 0.10
+deadband_yaw_rate: 0.10
+```
+
+这样 planner 输出 `vy=0.01` 这类细小修正时会被转成 0，不会导致整条
+`move(vx, vy, yaw_rate)` 被 SDK 拒绝。
+
+如果日志持续出现：
+
+```text
 Cannot transition to 'move' state: must transition to 'standUp' first.
 ```
 
@@ -601,11 +714,11 @@ Waiting for standUp state before sending move commands
 standUp state confirmed: ctrlmode=1; move commands enabled
 ```
 
-在看到 `move commands enabled` 之前，不要发布 `/cmd_vel` 做运动测试。
+在看到 `move commands enabled` 之前，不要发布 `/scan_planner/cmd_vel` 做运动测试。
 
 ### 10.5 Planner 一直 no odom
 
-说明 `scan_planner_node` 没收到 `body_pose`。
+说明 `scan_planner_node` 没收到 `body_pose`。启用 `use_lidar_to_body_odom:=true` 时，先检查 `/body_state_estimation`。
 
 检查：
 
@@ -668,7 +781,7 @@ ros2 topic echo /your/camera/odom --once
 
 ### 10.9 机器狗方向不对
 
-如果 `/cmd_vel.linear.x > 0` 时机器狗不是向前，常见原因是机身坐标系定义和 SDK 定义不同。
+如果 `/scan_planner/cmd_vel.linear.x > 0` 时机器狗不是向前，常见原因是机身坐标系定义和 SDK 定义不同。
 
 处理方式：
 
@@ -684,7 +797,7 @@ ros2 topic echo /your/camera/odom --once
 4. Orin 编译通过。
 5. 启动 FAST_LIO，确认 `/state_estimation` 和 `/cloud_registered` 正常。
 6. 单独启动 `zsibot_cmd_udp_client` 或 `zsibot_cmd_bridge`。
-7. 手动发小 `/cmd_vel`，确认站立、前后、左右、旋转方向。
+7. 手动发小 `/scan_planner/cmd_vel`，确认站立、前后、左右、旋转方向。
 8. 启动 planner，但先不要给目标点，观察是否有 odom/map。
 9. 给很近的目标点，低速测试。
 10. 再逐步增大目标距离和速度限制。

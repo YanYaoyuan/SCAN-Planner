@@ -9,6 +9,7 @@ import os
 
 def _setup(context):
     config_file = LaunchConfiguration("config_file").perform(context)
+    cmd_vel_topic = LaunchConfiguration("cmd_vel_topic").perform(context)
     if not config_file:
         config_file = os.path.join(
             get_package_share_directory("zsibot_cmd_bridge"),
@@ -22,6 +23,7 @@ def _setup(context):
             name="zsibot_cmd_udp_client",
             output="screen",
             parameters=[config_file],
+            remappings=[("cmd_vel", cmd_vel_topic)],
         )
     ]
 
@@ -30,6 +32,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("config_file", default_value=""),
+            DeclareLaunchArgument("cmd_vel_topic", default_value="/scan_planner/cmd_vel"),
             OpaqueFunction(function=_setup),
         ]
     )

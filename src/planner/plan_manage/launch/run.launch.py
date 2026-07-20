@@ -34,6 +34,28 @@ def _setup(context):
     zsibot_udp_client_config_file = LaunchConfiguration(
         "zsibot_udp_client_config_file"
     ).perform(context)
+    use_lidar_to_body_odom = _as_bool(
+        LaunchConfiguration("use_lidar_to_body_odom").perform(context)
+    )
+    lidar_odom_topic = LaunchConfiguration("lidar_odom_topic").perform(context)
+    body_odom_topic = LaunchConfiguration("body_odom_topic").perform(context)
+    body_odom_frame_id = LaunchConfiguration("body_odom_frame_id").perform(context)
+    body_odom_sensor_frame_id = LaunchConfiguration("body_odom_sensor_frame_id").perform(context)
+    body_odom_world_frame_id = LaunchConfiguration("body_odom_world_frame_id").perform(context)
+    body_odom_publish_tf = _as_bool(LaunchConfiguration("body_odom_publish_tf").perform(context))
+    body_odom_transform_twist = _as_bool(
+        LaunchConfiguration("body_odom_transform_twist").perform(context)
+    )
+    body_to_sensor = {
+        "body_to_sensor.x": float(LaunchConfiguration("body_to_sensor_x").perform(context)),
+        "body_to_sensor.y": float(LaunchConfiguration("body_to_sensor_y").perform(context)),
+        "body_to_sensor.z": float(LaunchConfiguration("body_to_sensor_z").perform(context)),
+        "body_to_sensor.roll": float(LaunchConfiguration("body_to_sensor_roll").perform(context)),
+        "body_to_sensor.pitch": float(LaunchConfiguration("body_to_sensor_pitch").perform(context)),
+        "body_to_sensor.yaw": float(LaunchConfiguration("body_to_sensor_yaw").perform(context)),
+    }
+    goal_frame_id = LaunchConfiguration("goal_frame_id").perform(context)
+    goal_transform_timeout = float(LaunchConfiguration("goal_transform_timeout").perform(context))
     navi_mode = int(LaunchConfiguration("navi_mode").perform(context))
     if sensor_type not in ("lidar", "depth"):
         raise RuntimeError("sensor_type must be 'lidar' or 'depth'")
@@ -65,6 +87,8 @@ def _setup(context):
             "grid_map.fx": 609.5884399414062,
             "grid_map.fy": 609.22021484375,
         }
+        if use_lidar_to_body_odom:
+            body_pose = body_odom_topic
     else:
         body_pose = "/quad_0/body_pose"
         sensor_pose = "/quad_0/camera_pose" if sensor_type == "depth" else "/quad_0/lidar_pose"
@@ -78,6 +102,9 @@ def _setup(context):
         need_extrinsic = False
         intrinsics = {}
 
+    if not goal_frame_id:
+        goal_frame_id = grid_frame_id
+
     common = {"use_sim_time": use_sim_time}
     planner_overrides = {
         **common,
@@ -87,8 +114,40 @@ def _setup(context):
         "grid_map.sensor_type": sensor_type,
         "grid_map.cloud_is_world": cloud_is_world,
         "grid_map.need_extrinsic": need_extrinsic,
+        "grid_map.vis_height": float(
+            LaunchConfiguration("grid_map_vis_height").perform(context)
+        ),
+        "fsm.goal_frame_id": goal_frame_id,
+        "fsm.goal_transform_timeout": goal_transform_timeout,
     }
-    actions = [
+    actions = []
+
+    if is_real and use_lidar_to_body_odom:
+        actions.append(
+            Node(
+                package="scan_planner",
+                executable="lidar_to_body_odom",
+                name="lidar_to_body_odom",
+                output="screen",
+                parameters=[
+                    common,
+                    body_to_sensor,
+                    {
+                        "body_frame_id": body_odom_frame_id,
+                        "sensor_frame_id": body_odom_sensor_frame_id,
+                        "world_frame_id": body_odom_world_frame_id,
+                        "publish_tf": body_odom_publish_tf,
+                        "transform_twist": body_odom_transform_twist,
+                    },
+                ],
+                remappings=[
+                    ("sensor_odom", lidar_odom_topic),
+                    ("body_odom", body_odom_topic),
+                ],
+            )
+        )
+
+    actions.append(
         Node(
             package="scan_planner",
             executable="scan_planner_node",
@@ -104,7 +163,7 @@ def _setup(context):
                 ("initial_path", initial_path),
             ],
         )
-    ]
+    )
     if publish_robot_description:
         go2_share = get_package_share_directory("go2_description")
         actions.append(
@@ -264,10 +323,26 @@ def generate_launch_description():
             DeclareLaunchArgument("real_sensor_pose_topic", default_value="/state_estimation"),
             DeclareLaunchArgument("real_cloud_topic", default_value="/cloud_registered"),
             DeclareLaunchArgument("real_depth_topic", default_value="/camera/aligned_depth_to_color/image_raw"),
-            DeclareLaunchArgument("real_cmd_vel_topic", default_value="/cmd_vel"),
+            DeclareLaunchArgument("real_cmd_vel_topic", default_value="/scan_planner/cmd_vel"),
             DeclareLaunchArgument("real_grid_frame_id", default_value="odom"),
             DeclareLaunchArgument("real_cloud_is_world", default_value="true"),
             DeclareLaunchArgument("real_need_extrinsic", default_value="false"),
+            DeclareLaunchArgument("use_lidar_to_body_odom", default_value="false"),
+            DeclareLaunchArgument("lidar_odom_topic", default_value="/state_estimation"),
+            DeclareLaunchArgument("body_odom_topic", default_value="/body_state_estimation"),
+            DeclareLaunchArgument("body_odom_frame_id", default_value="base_link"),
+            DeclareLaunchArgument("body_odom_sensor_frame_id", default_value="livox_frame"),
+            DeclareLaunchArgument("body_odom_world_frame_id", default_value=""),
+            DeclareLaunchArgument("body_odom_publish_tf", default_value="false"),
+            DeclareLaunchArgument("body_odom_transform_twist", default_value="false"),
+            DeclareLaunchArgument("body_to_sensor_x", default_value="0.0"),
+            DeclareLaunchArgument("body_to_sensor_y", default_value="0.0"),
+            DeclareLaunchArgument("body_to_sensor_z", default_value="0.0"),
+            DeclareLaunchArgument("body_to_sensor_roll", default_value="0.0"),
+            DeclareLaunchArgument("body_to_sensor_pitch", default_value="0.0"),
+            DeclareLaunchArgument("body_to_sensor_yaw", default_value="0.0"),
+            DeclareLaunchArgument("goal_frame_id", default_value=""),
+            DeclareLaunchArgument("goal_transform_timeout", default_value="0.2"),
             DeclareLaunchArgument("goal_topic", default_value="/move_base_simple/goal"),
             DeclareLaunchArgument("initial_path_topic", default_value="/initial_path"),
             DeclareLaunchArgument("map_size_x", default_value="40.0"),
@@ -276,6 +351,7 @@ def generate_launch_description():
             DeclareLaunchArgument("init_x", default_value="-19.0"),
             DeclareLaunchArgument("init_y", default_value="1.0"),
             DeclareLaunchArgument("init_z", default_value="0.3"),
+            DeclareLaunchArgument("grid_map_vis_height", default_value="0.3"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             OpaqueFunction(function=_setup),
         ]

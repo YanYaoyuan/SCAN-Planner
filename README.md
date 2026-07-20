@@ -86,7 +86,7 @@ ros2 launch scan_planner run.launch.py \
 
 ### ZsiBot 机器狗桥接
 
-仓库提供 `zsibot_cmd_bridge`，用于将规划器输出的 `/cmd_vel` 转发到 ZsiBot HighLevel SDK：
+仓库提供 `zsibot_cmd_bridge`，用于将规划器输出的速度命令转发到 ZsiBot HighLevel SDK。真机脚本默认使用隔离话题 `/scan_planner/cmd_vel`，避免和机器狗已有的 `/cmd_vel` 控制链路同时下发：
 
 ```bash
 colcon build --symlink-install --packages-select zsibot_cmd_bridge \
@@ -114,7 +114,7 @@ cd rk_proxy
 ./run_real_planner_udp.sh
 ```
 
-Orin 侧默认把 `/cmd_vel` 发送到 `192.168.234.1:44000`，配置文件是 `src/zsibot_cmd_bridge/config/zsibot_cmd_udp_client.yaml`。这种方式不需要修改 RK3588 的 `/opt/export/config/sdk_config.yaml`，但需要把打包产物里的 `rk_proxy/` 目录放到 RK3588 上并启动。
+Orin 侧默认把 `/scan_planner/cmd_vel` 发送到 `192.168.234.1:44000`，配置文件是 `src/zsibot_cmd_bridge/config/zsibot_cmd_udp_client.yaml`。这种方式不需要修改 RK3588 的 `/opt/export/config/sdk_config.yaml`，但需要把打包产物里的 `rk_proxy/` 目录放到 RK3588 上并启动。
 
 2. 原来的直接桥接方式是 Orin NX 直接运行 SDK client：
 

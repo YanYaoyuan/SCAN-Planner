@@ -15,7 +15,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("config_file", default_value=default_config),
-            DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
+            DeclareLaunchArgument("cmd_vel_topic", default_value="/scan_planner/cmd_vel"),
             Node(
                 package="zsibot_cmd_bridge",
                 executable="zsibot_cmd_bridge",

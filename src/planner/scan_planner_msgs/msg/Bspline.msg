@@ -1,3 +1,5 @@
+std_msgs/Header header
+
 int32 order
 int64 traj_id
 builtin_interfaces/Time start_time

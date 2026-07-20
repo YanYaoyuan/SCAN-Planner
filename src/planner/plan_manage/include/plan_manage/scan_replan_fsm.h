@@ -9,6 +9,8 @@
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <vector>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -62,6 +64,8 @@ namespace scan_planner
     double self_double_cylinder_radius_, self_double_cylinder_offset_;
     double body_height_;
     std::string self_inflation_frame_id_;
+    std::string goal_frame_id_;
+    double goal_transform_timeout_;
 
     /* planning data */
     bool trigger_, have_target_, have_odom_, have_new_target_;
@@ -96,6 +100,8 @@ namespace scan_planner
     rclcpp::Publisher<scan_planner_msgs::msg::Bspline>::SharedPtr bspline_pub_;
     rclcpp::Publisher<scan_planner_msgs::msg::DataDisp>::SharedPtr data_disp_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr self_inflation_pub_;
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 
     /* helper functions */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
@@ -113,6 +119,8 @@ namespace scan_planner
     bool planNextWaypoint();
     bool isWaypointSequenceMode() const;
     bool adjustGlobalTargetIfOccupied();
+    bool transformPoseToGoalFrame(const geometry_msgs::msg::PoseStamped &input,
+                                  geometry_msgs::msg::PoseStamped &output) const;
     void getLocalTarget();
     void finishProcess();
     void publishSelfInflationMarker();
