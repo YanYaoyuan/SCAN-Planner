@@ -27,7 +27,13 @@ def _setup(context):
     controller_mode = LaunchConfiguration("controller_mode").perform(context)
     keypoints_file = LaunchConfiguration("keypoints_file").perform(context)
     use_zsibot_bridge = _as_bool(LaunchConfiguration("use_zsibot_bridge").perform(context))
+    use_zsibot_udp_client = _as_bool(
+        LaunchConfiguration("use_zsibot_udp_client").perform(context)
+    )
     zsibot_config_file = LaunchConfiguration("zsibot_config_file").perform(context)
+    zsibot_udp_client_config_file = LaunchConfiguration(
+        "zsibot_udp_client_config_file"
+    ).perform(context)
     navi_mode = int(LaunchConfiguration("navi_mode").perform(context))
     if sensor_type not in ("lidar", "depth"):
         raise RuntimeError("sensor_type must be 'lidar' or 'depth'")
@@ -39,6 +45,8 @@ def _setup(context):
         raise RuntimeError(
             "navi_mode=2 requires keypoints_file to reference a ROS 2 parameter YAML"
         )
+    if use_zsibot_bridge and use_zsibot_udp_client:
+        raise RuntimeError("use_zsibot_bridge and use_zsibot_udp_client cannot both be true")
 
     if is_real:
         body_pose = LaunchConfiguration("real_body_pose_topic").perform(context)
@@ -161,6 +169,22 @@ def _setup(context):
                     remappings=[("cmd_vel", cmd_vel)],
                 )
             )
+        if is_real and use_zsibot_udp_client:
+            if not zsibot_udp_client_config_file:
+                zsibot_share = get_package_share_directory("zsibot_cmd_bridge")
+                zsibot_udp_client_config_file = os.path.join(
+                    zsibot_share, "config", "zsibot_cmd_udp_client.yaml"
+                )
+            actions.append(
+                Node(
+                    package="zsibot_cmd_bridge",
+                    executable="zsibot_cmd_udp_client",
+                    name="zsibot_cmd_udp_client",
+                    output="screen",
+                    parameters=[zsibot_udp_client_config_file, common],
+                    remappings=[("cmd_vel", cmd_vel)],
+                )
+            )
         if not is_real:
             actions.append(
                 Node(
@@ -233,7 +257,9 @@ def generate_launch_description():
             DeclareLaunchArgument("pcd_map_file", default_value=""),
             DeclareLaunchArgument("publish_robot_description", default_value="true"),
             DeclareLaunchArgument("use_zsibot_bridge", default_value="false"),
+            DeclareLaunchArgument("use_zsibot_udp_client", default_value="false"),
             DeclareLaunchArgument("zsibot_config_file", default_value=""),
+            DeclareLaunchArgument("zsibot_udp_client_config_file", default_value=""),
             DeclareLaunchArgument("real_body_pose_topic", default_value="/state_estimation"),
             DeclareLaunchArgument("real_sensor_pose_topic", default_value="/state_estimation"),
             DeclareLaunchArgument("real_cloud_topic", default_value="/cloud_registered"),

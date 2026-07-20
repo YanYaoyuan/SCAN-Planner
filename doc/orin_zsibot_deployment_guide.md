@@ -2,8 +2,8 @@
 
 本文档面向当前双板机器狗：
 
-- Orin NX：运行 SCAN-Planner、LIO/感知、`zsibot_cmd_bridge`
-- RK3588：运行 ZsiBot 原厂运动控制程序
+- Orin NX：运行 SCAN-Planner、LIO/感知、`zsibot_cmd_bridge` 或 `zsibot_cmd_udp_client`
+- RK3588：运行 ZsiBot 原厂运动控制程序；UDP proxy 模式下额外运行 `zsibot_sdk_proxy`
 - Orin NX IP：`192.168.234.234`
 - RK3588 IP：`192.168.234.1`
 - SDK 端口：`43988`
@@ -19,6 +19,14 @@ LIO / Sensor Driver
 SCAN-Planner on Orin NX
   -> /cmd_vel
 
+方案 A，不修改 RK 配置：
+zsibot_cmd_udp_client on Orin NX
+  -> UDP 192.168.234.1:44000
+zsibot_sdk_proxy on RK3588
+  -> SDK 127.0.0.1:43988 -> 127.0.0.1
+  -> ZsiBot HighLevel::move(vx, vy, yaw_rate)
+
+方案 B，直接桥接：
 zsibot_cmd_bridge on Orin NX
   -> ZsiBot HighLevel::move(vx, vy, yaw_rate)
 
@@ -70,7 +78,7 @@ rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-## 4. RK3588 SDK 通信配置
+## 4. RK3588 SDK 通信方案
 
 从 Orin NX 登录 RK3588：
 
@@ -78,7 +86,33 @@ rosdep install --from-paths src --ignore-src -r -y
 ssh firefly@192.168.234.1
 ```
 
-修改 RK3588 上的 SDK 配置：
+### 4.1 推荐：不修改 RK3588 配置，使用 UDP proxy
+
+这种方式保留 RK3588 默认 SDK 配置：
+
+```yaml
+target_ip: "127.0.0.1"
+target_port: 43988
+```
+
+需要把打包产物中的 `rk_proxy/` 目录放到 RK3588，比如 `/app/rk_proxy`，然后在 RK3588 上运行：
+
+```bash
+cd /app/rk_proxy
+./run_zsibot_sdk_proxy.sh
+```
+
+它会在 RK 上监听 `0.0.0.0:44000`，收到 Orin 的 UDP 速度包后，在 RK 本机调用 SDK：
+
+```text
+Orin /cmd_vel -> UDP 192.168.234.1:44000 -> RK proxy -> SDK 127.0.0.1:43988
+```
+
+Orin 侧使用 `zsibot_cmd_udp_client` 或 `run_real_planner_udp.sh`。这条链路不需要改 `/opt/export/config/sdk_config.yaml`，但 RK 上必须保持 `zsibot_sdk_proxy` 进程运行。
+
+### 4.2 备选：直接桥接，需要修改 RK3588 配置
+
+如果不想在 RK 上多跑 proxy，也可以让 Orin 直接运行 SDK client。此时要修改 RK3588 上的 SDK 配置：
 
 ```bash
 sudo vim /opt/export/config/sdk_config.yaml
@@ -187,7 +221,16 @@ Planner 需要：
 | `real_cloud_is_world` | `true` | `/cloud_registered` 已转到 odom/world 系 |
 | `real_need_extrinsic` | `false` | 使用 FAST_LIO 发布的传感器位姿 |
 
-因此 FAST_LIO 已启动后，可以直接运行：
+因此 FAST_LIO 已启动后，推荐先按“不修改 RK 配置”的 UDP proxy 方式运行。
+
+先在 RK3588 上保持 proxy 运行：
+
+```bash
+cd /app/rk_proxy
+./run_zsibot_sdk_proxy.sh
+```
+
+再在 Orin NX 上启动 planner：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -198,7 +241,7 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_bridge:=true
+  use_zsibot_udp_client:=true
 ```
 
 如果现场 FAST_LIO 输出被改名，启动时传参：
@@ -209,7 +252,7 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_bridge:=true \
+  use_zsibot_udp_client:=true \
   real_body_pose_topic:=/state_estimation \
   real_sensor_pose_topic:=/state_estimation \
   real_cloud_topic:=/cloud_registered \
@@ -227,12 +270,14 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=depth \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_bridge:=true \
+  use_zsibot_udp_client:=true \
   real_body_pose_topic:=/your/robot/odom \
   real_sensor_pose_topic:=/your/camera/odom \
   real_depth_topic:=/your/depth/image \
   real_cmd_vel_topic:=/cmd_vel
 ```
+
+如果使用“直接桥接”方案，则把上面命令里的 `use_zsibot_udp_client:=true` 改成 `use_zsibot_bridge:=true`，并确认 RK3588 的 `/opt/export/config/sdk_config.yaml` 已经把 `target_ip` 改成 Orin NX 的 IP。
 
 ### 7.1 录制 waypoint 并使用 navi_mode=2
 
@@ -288,7 +333,7 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_bridge:=true \
+  use_zsibot_udp_client:=true \
   real_body_pose_topic:=/state_estimation \
   real_sensor_pose_topic:=/state_estimation \
   real_cloud_topic:=/cloud_registered \
@@ -381,9 +426,38 @@ grid_map.k_depth_scaling_factor
 - 16UC1 深度图，单位毫米：`k_depth_scaling_factor: 1000.0`
 - 32FC1 深度图，单位米：代码会转换，但仍建议实测确认
 
-## 9. 单独测试 ZsiBot Bridge
+## 9. 单独测试 ZsiBot 控制链路
 
-不启动 planner，只测试 SDK 控制链路：
+### 9.1 UDP proxy 模式
+
+先在 RK3588 上启动 proxy：
+
+```bash
+cd /app/rk_proxy
+./run_zsibot_sdk_proxy.sh
+```
+
+再在 Orin NX 上只启动 UDP client：
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/SCAN-Planner/install/setup.bash
+
+ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py
+```
+
+另一个 Orin 终端发送小速度：
+
+```bash
+ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
+  "{linear: {x: 0.05, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+```
+
+RK proxy 日志里 `seq` 递增、`connected=true`，并且机器狗能站立/低速动/停住，就说明链路通了。
+
+### 9.2 直接 bridge 模式
+
+不启动 planner，只测试 Orin 上的 SDK bridge：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -406,7 +480,7 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
-Bridge 默认 50Hz 重发最近速度，`cmd_timeout` 后会发零速。
+Bridge 和 UDP proxy 默认 50Hz 重发最近速度，`cmd_timeout` 后会发零速。
 
 正常日志类似：
 
@@ -465,7 +539,7 @@ ros2 pkg list | grep zsibot
 
 如果仍没有，重新编译。
 
-### 10.3 Bridge 日志 connected=false
+### 10.3 控制链路 connected=false
 
 重点检查：
 
@@ -474,7 +548,15 @@ ping 192.168.234.1
 ssh firefly@192.168.234.1
 ```
 
-RK3588 上检查：
+如果用 UDP proxy 模式，先看 RK proxy 日志。如果 RK proxy 一直是：
+
+```text
+SDK status: connected=false battery=0% ctrlmode=0
+```
+
+说明 RK 本机 SDK 到运动控制程序没通，先在 RK 上跑官方 highlevel demo 验证默认 `127.0.0.1` SDK 配置。如果官方 demo 能跑，再检查 proxy 是否和官方 demo 同时占用 SDK。
+
+如果用直接 bridge 模式，RK3588 上检查：
 
 ```bash
 cat /opt/export/config/sdk_config.yaml
@@ -597,14 +679,15 @@ ros2 topic echo /your/camera/odom --once
 ## 11. 推荐上板顺序
 
 1. Orin 能 ping/ssh RK3588。
-2. RK3588 配好 `sdk_config.yaml` 并重启运动控制。
-3. Orin 编译通过。
-4. 启动 FAST_LIO，确认 `/state_estimation` 和 `/cloud_registered` 正常。
-5. 单独启动 `zsibot_cmd_bridge`。
-6. 手动发小 `/cmd_vel`，确认站立、前后、左右、旋转方向。
-7. 启动 planner，但先不要给目标点，观察是否有 odom/map。
-8. 给很近的目标点，低速测试。
-9. 再逐步增大目标距离和速度限制。
+2. 优先使用 UDP proxy：RK3588 启动 `/app/rk_proxy/run_zsibot_sdk_proxy.sh`，不改 `sdk_config.yaml`。
+3. 如果不用 proxy，再把 RK3588 `sdk_config.yaml` 配好并重启运动控制。
+4. Orin 编译通过。
+5. 启动 FAST_LIO，确认 `/state_estimation` 和 `/cloud_registered` 正常。
+6. 单独启动 `zsibot_cmd_udp_client` 或 `zsibot_cmd_bridge`。
+7. 手动发小 `/cmd_vel`，确认站立、前后、左右、旋转方向。
+8. 启动 planner，但先不要给目标点，观察是否有 odom/map。
+9. 给很近的目标点，低速测试。
+10. 再逐步增大目标距离和速度限制。
 
 ## 12. 现场建议
 

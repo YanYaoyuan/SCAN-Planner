@@ -1,8 +1,11 @@
 # ZsiBot Cmd Bridge Deployment
 
-`zsibot_cmd_bridge` runs on the Orin NX. It subscribes to ROS 2 `/cmd_vel`
-and sends `HighLevel::move(vx, vy, yaw_rate)` commands to the ZsiBot motion
-controller on the RK3588.
+`zsibot_cmd_bridge` provides two ways to drive a ZsiBot robot from ROS 2
+`/cmd_vel`:
+
+- Direct bridge: run the ZsiBot SDK client on the Orin NX.
+- UDP proxy: run a ROS 2 UDP client on the Orin NX and a non-ROS SDK proxy on
+  the RK3588. This keeps the RK3588 SDK config at `127.0.0.1`.
 
 ## Network Layout
 
@@ -13,7 +16,56 @@ Use these values for the current robot:
 | Orin NX | `192.168.234.234` |
 | RK3588 / ZsiBot motion controller | `192.168.234.1` |
 
-The bridge config is `config/zsibot_cmd_bridge.yaml`:
+## Mode A: UDP Proxy Without Editing RK3588 Config
+
+This is the recommended first deployment mode for the current dual-board robot.
+The RK3588 `/opt/export/config/sdk_config.yaml` can stay at its factory-style
+local settings:
+
+```yaml
+target_ip: "127.0.0.1"
+target_port: 43988
+```
+
+Runtime chain:
+
+```text
+Orin ROS 2 /cmd_vel
+  -> zsibot_cmd_udp_client
+  -> UDP 192.168.234.1:44000
+  -> RK zsibot_sdk_proxy
+  -> HighLevel::move(vx, vy, yaw_rate) through local SDK
+```
+
+Start the proxy on RK3588:
+
+```bash
+cd /app/rk_proxy
+./run_zsibot_sdk_proxy.sh
+```
+
+Start the ROS 2 UDP client on Orin NX:
+
+```bash
+source install/setup.bash
+ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py
+```
+
+Or start it together with the real planner:
+
+```bash
+ros2 launch scan_planner run.launch.py \
+  is_real_world:=true \
+  controller_mode:=closed_loop \
+  publish_robot_description:=false \
+  use_zsibot_udp_client:=true
+```
+
+The Orin-side UDP client config is `config/zsibot_cmd_udp_client.yaml`.
+
+## Mode B: Direct Bridge With RK3588 Config Change
+
+The direct bridge config is `config/zsibot_cmd_bridge.yaml`:
 
 ```yaml
 zsibot_cmd_bridge:
@@ -23,7 +75,8 @@ zsibot_cmd_bridge:
     local_port: 43988
 ```
 
-On the RK3588, edit `/opt/export/config/sdk_config.yaml`:
+For direct bridge mode, edit `/opt/export/config/sdk_config.yaml` on the
+RK3588:
 
 ```yaml
 target_ip: "192.168.234.234"
@@ -52,7 +105,7 @@ For the point-foot model, add `-DZSIBOT_MODEL=zsl-1`.
 
 ## Run
 
-Start the planner and bridge together:
+Start the planner and direct bridge together:
 
 ```bash
 source install/setup.bash
@@ -61,6 +114,8 @@ ros2 launch scan_planner run.launch.py \
   controller_mode:=closed_loop \
   use_zsibot_bridge:=true
 ```
+
+For UDP proxy mode, use `use_zsibot_udp_client:=true` instead.
 
 If the new robot uses different topic names, pass them at launch time:
 
@@ -117,11 +172,18 @@ different, update those matrices or provide a small pose conversion node that
 publishes `real_sensor_pose_topic` as the actual sensor pose. The latter is
 usually cleaner because SCAN-Planner can then run with `grid_map.need_extrinsic:=false`.
 
-Or start only the bridge:
+Or start only the direct bridge:
 
 ```bash
 source install/setup.bash
 ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
+```
+
+For UDP proxy mode, start only the Orin UDP client:
+
+```bash
+source install/setup.bash
+ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py
 ```
 
 ## Smoke Test
@@ -133,7 +195,8 @@ ping 192.168.234.1
 ssh firefly@192.168.234.1
 ```
 
-Then run the bridge and publish a small velocity command:
+Then run either the direct bridge or the UDP client/proxy pair and publish a
+small velocity command:
 
 ```bash
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
@@ -147,8 +210,9 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
 
-Keep the command small during first tests. The bridge republishes the last
-command at `publish_rate` and sends zero velocity when `/cmd_vel` times out.
+Keep the command small during first tests. Both the direct bridge and UDP proxy
+republish the last command at `publish_rate` and send zero velocity when
+`/cmd_vel` times out.
 
 ## Runtime Logs
 
@@ -166,12 +230,17 @@ ZSL-1w control modes from the API:
 | `1` | standing mode |
 | `3` | moving mode |
 
-If `connected=false`, check:
+If direct bridge mode prints `connected=false`, check:
 
 - Orin IP is really `192.168.234.234`.
 - RK3588 `sdk_config.yaml` has `target_ip: "192.168.234.234"`.
 - No other SDK process is already using port `43988`.
 - RK3588 motion control has been restarted after config changes.
+
+If UDP proxy mode prints `connected=false` on RK3588, the Orin-to-RK UDP hop is
+not the first suspect. Check that the official RK highlevel demo works with the
+default local SDK config, and make sure the demo and proxy are not running at
+the same time.
 
 If `move()` returns non-zero, check that the robot is standing. The ZSL-1w API
 requires `move()` to be called in standing state.
@@ -195,6 +264,16 @@ requires `move()` to be called in standing state.
 | `standup_wait_timeout` | `10.0` | Seconds before warning that standUp is still not confirmed |
 | `log_sdk_status` | `true` | Prints connection, battery, mode, command |
 | `status_log_period` | `2.0` | Seconds between status logs |
+
+UDP client/proxy defaults:
+
+| Parameter / option | Default | Notes |
+| --- | --- | --- |
+| `proxy_ip` | `192.168.234.1` | RK3588 IP used by Orin UDP client |
+| `proxy_port` / `--listen-port` | `44000` | UDP port between Orin and RK proxy |
+| `--sdk-local-ip` | `127.0.0.1` | RK local SDK client IP |
+| `--sdk-local-port` | `43988` | RK local SDK client port |
+| `--sdk-dog-ip` | `127.0.0.1` | RK local robot SDK target |
 
 The ZSL-1w API allows larger `move()` limits, but these defaults intentionally
 keep first deployment slow. Increase the planner controller and bridge limits

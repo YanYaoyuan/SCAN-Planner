@@ -53,7 +53,20 @@ set_target_properties(zsibot_cmd_bridge PROPERTIES
   BUILD_RPATH "${ZSIBOT_LIB_DIR}"
   INSTALL_RPATH "$ORIGIN")
 
-install(TARGETS zsibot_cmd_bridge DESTINATION lib/${PROJECT_NAME})
+add_executable(zsibot_cmd_udp_client src/zsibot_cmd_udp_client.cpp)
+ament_target_dependencies(zsibot_cmd_udp_client geometry_msgs rclcpp)
+
+add_executable(zsibot_sdk_proxy src/zsibot_sdk_proxy.cpp)
+target_include_directories(zsibot_sdk_proxy PRIVATE
+  "${ZSIBOT_SDK_ROOT}/include"
+  "${ZSIBOT_SDK_ROOT}/include/${ZSIBOT_MODEL}")
+target_link_libraries(zsibot_sdk_proxy "${ZSIBOT_SDK_LIB}")
+set_target_properties(zsibot_sdk_proxy PROPERTIES
+  BUILD_RPATH "${ZSIBOT_LIB_DIR}"
+  INSTALL_RPATH "$ORIGIN")
+
+install(TARGETS zsibot_cmd_bridge zsibot_cmd_udp_client zsibot_sdk_proxy
+  DESTINATION lib/${PROJECT_NAME})
 install(FILES "${ZSIBOT_SDK_LIB}" DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 

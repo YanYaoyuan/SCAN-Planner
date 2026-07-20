@@ -52,7 +52,7 @@ source install/setup.bash
 ros2 launch scan_planner run.launch.py \
   is_real_world:=false navi_mode:=1 sensor_type:=lidar \
   controller_mode:=closed_loop use_gpu:=false \
-  use_pcd_map:=true pcd_map_file:=/home/xiaoqi_wen/Desktop/scan/SCAN-Planner/map.pcd
+  use_pcd_map:=true pcd_map_file:=/home/user/robot/SCAN-Planner/scans.pcd
 ```
 
 
@@ -95,7 +95,28 @@ colcon build --symlink-install --packages-select zsibot_cmd_bridge \
 
 默认型号为轮足 `zsl-1w`。点足型号可增加 `-DZSIBOT_MODEL=zsl-1`。默认 SDK 根目录为仓库根目录下的 `zsibot_sdk`，如 SDK 放在其他路径，可增加 `-DZSIBOT_SDK_ROOT=/absolute/path/to/zsibot_sdk`。
 
-Orin NX 运行桥接节点：
+有两种双板控制方式：
+
+1. 推荐先用“不修改 RK3588 配置”的 UDP proxy 方式。Orin NX 运行 ROS 2 UDP client，RK3588 运行一个轻量 proxy，本质上让 SDK 仍然在 RK 本机访问 `127.0.0.1:43988`：
+
+```bash
+# RK3588
+cd rk_proxy
+./run_zsibot_sdk_proxy.sh
+
+# Orin NX
+./run_cmd_udp_client_only.sh
+```
+
+真机 planner 联动启动：
+
+```bash
+./run_real_planner_udp.sh
+```
+
+Orin 侧默认把 `/cmd_vel` 发送到 `192.168.234.1:44000`，配置文件是 `src/zsibot_cmd_bridge/config/zsibot_cmd_udp_client.yaml`。这种方式不需要修改 RK3588 的 `/opt/export/config/sdk_config.yaml`，但需要把打包产物里的 `rk_proxy/` 目录放到 RK3588 上并启动。
+
+2. 原来的直接桥接方式是 Orin NX 直接运行 SDK client：
 
 ```bash
 ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
@@ -111,7 +132,7 @@ ros2 launch scan_planner run.launch.py \
 
 桥接参数位于 `src/zsibot_cmd_bridge/config/zsibot_cmd_bridge.yaml`。其中 `local_ip` 是 Orin NX 在机器人控制网段的 IP，`dog_ip` 是 RK3588 运动控制板 IP。当前默认值适配 Orin NX `192.168.234.234`、RK3588 `192.168.234.1`。RK3588 侧还需要将 `/opt/export/config/sdk_config.yaml` 的 `target_ip` 配成 Orin NX 的 IP，`target_port` 与桥接节点 `local_port` 保持一致。
 
-完整双板部署、冒烟测试和故障排查见 `doc/orin_zsibot_deployment_guide.md` 和 `src/zsibot_cmd_bridge/README.md`。
+完整双板部署、冒烟测试和故障排查见 `doc/orin_zsibot_deployment_guide.md`、`tools/orin_runtime/README_ORIN_RUNTIME.md` 和 `src/zsibot_cmd_bridge/README.md`。
 
 ### Orin NX sysroot 交叉编译
 
