@@ -123,6 +123,7 @@ namespace scan_planner
                                   geometry_msgs::msg::PoseStamped &output) const;
     void getLocalTarget();
     void finishProcess();
+    void publishTrajectoryClear(const std::string &reason);
     void publishSelfInflationMarker();
     double getOdomYaw() const;
     double estimateYawFromSegment(const Eigen::Vector3d &from, const Eigen::Vector3d &to) const;

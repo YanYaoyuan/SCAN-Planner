@@ -563,6 +563,8 @@ namespace scan_planner
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
     cout << "[" + pos_call + "]: from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
+    if (new_state == WAIT_TARGET && pre_s != int(WAIT_TARGET))
+      publishTrajectoryClear(pos_call);
   }
 
   std::pair<int, SCANReplanFSM::FSM_EXEC_STATE> SCANReplanFSM::timesOfConsecutiveStateCalls()
@@ -780,6 +782,23 @@ namespace scan_planner
       flag_escape_emergency_ = true;
       changeFSMExecState(EMERGENCY_STOP, "finishProcess");
     }
+  }
+
+  void SCANReplanFSM::publishTrajectoryClear(const std::string &reason)
+  {
+    if (!bspline_pub_)
+      return;
+
+    scan_planner_msgs::msg::Bspline bspline;
+    bspline.header.stamp = node_->now();
+    bspline.header.frame_id = self_inflation_frame_id_;
+    bspline.order = 0;
+    bspline.traj_id = -1;
+    bspline.start_time = bspline.header.stamp;
+    bspline_pub_->publish(bspline);
+    RCLCPP_INFO(node_->get_logger(),
+                "Published empty B-spline to clear controller trajectory: %s",
+                reason.c_str());
   }
 
   bool SCANReplanFSM::planFromCurrentTraj()

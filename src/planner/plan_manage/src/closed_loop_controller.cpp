@@ -121,11 +121,27 @@ private:
     execution_frozen_pub_->publish(msg);
   }
 
+  void clearTrajectory(const std::string &reason)
+  {
+    if (receive_traj_)
+      RCLCPP_INFO(get_logger(), "Clearing active trajectory: %s", reason.c_str());
+    receive_traj_ = false;
+    traj_.clear();
+    sampled_path_.clear();
+    sampled_times_.clear();
+    sampled_arc_lengths_.clear();
+    traj_duration_ = 0.0;
+    exec_time_ = 0.0;
+    closest_path_idx_ = 0;
+    publishExecutionFrozen(false);
+    publishStop();
+  }
+
   void bsplineCallback(const scan_planner_msgs::msg::Bspline::ConstSharedPtr msg)
   {
     if (msg->pos_pts.empty() || msg->knots.empty() || msg->order <= 0)
     {
-      RCLCPP_WARN(get_logger(), "Ignoring invalid B-spline");
+      clearTrajectory("empty/invalid B-spline");
       return;
     }
     Eigen::MatrixXd points(3, msg->pos_pts.size());
