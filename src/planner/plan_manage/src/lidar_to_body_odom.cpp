@@ -18,7 +18,7 @@ class LidarToBodyOdom : public rclcpp::Node
 public:
   LidarToBodyOdom() : Node("lidar_to_body_odom")
   {
-    body_frame_id_ = declare_parameter<std::string>("body_frame_id", "base_link");
+    body_frame_id_ = declare_parameter<std::string>("body_frame_id", "scan_base_link");
     sensor_frame_id_ = declare_parameter<std::string>("sensor_frame_id", "livox_frame");
     world_frame_id_ = declare_parameter<std::string>("world_frame_id", "");
     publish_tf_ = declare_parameter<bool>("publish_tf", false);

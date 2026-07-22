@@ -232,7 +232,7 @@ common:
 `common.odom_frame_id` 改成 `lio_odom`，然后重启 SLAM。之后 SCAN-Planner
 也用 `real_grid_frame_id:=lio_odom` 和 `goal_frame_id:=lio_odom`。
 
-第二，FAST_LIO 的 `/state_estimation.child_frame_id` 是 `livox_frame`，它是激光，不是机身中心。新版本提供 `lidar_to_body_odom` 节点，可以从 `/state_estimation` 生成 `/body_state_estimation`。参数 `body_to_sensor_*` 是 `base_link -> livox_frame` 外参，单位是米和弧度；没量准外参前不要发导航 goal。
+第二，FAST_LIO 的 `/state_estimation.child_frame_id` 是 `livox_frame`，它是激光，不是机身中心。新版本提供 `lidar_to_body_odom` 节点，可以从 `/state_estimation` 生成 `/body_state_estimation`。默认输出的 planner 机身坐标名是 `scan_base_link`，避免和机器狗原系统里的 `base_link` 冲突。参数 `body_to_sensor_*` 是 `scan_base_link -> livox_frame` 外参，单位是米和弧度；没量准外参前不要发导航 goal。
 
 第三，控制链路只能保留一条。新版本脚本默认让 planner 输出 `/scan_planner/cmd_vel`，再由 `zsibot_cmd_bridge` 或 `zsibot_cmd_udp_client` 订阅这个隔离话题。这样即使机器狗系统里还有 `ecal2ros2` 订阅 `/cmd_vel`，也不会同时收到 planner 的速度。
 
@@ -294,7 +294,7 @@ ros2 launch scan_planner run.launch.py \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=base_link \
+  body_odom_frame_id:=scan_base_link \
   body_odom_sensor_frame_id:=livox_frame \
   body_odom_world_frame_id:=lio_odom \
   body_odom_publish_tf:=false \
@@ -313,7 +313,7 @@ ros2 launch scan_planner run.launch.py \
   real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
-把 `body_to_sensor_*` 的 0 改成真实 `base_link -> livox_frame` 外参。`body_odom_publish_tf:=false` 是故意的：它只给 planner 发布 odometry，不再发布一条新的 `lio_odom -> base_link` TF，避免和机器狗自带 `robot_tf` 重复。
+把 `body_to_sensor_*` 的 0 改成真实 `scan_base_link -> livox_frame` 外参。`body_odom_publish_tf:=false` 是故意的：它只给 planner 发布 odometry，不再发布一条新的 `lio_odom -> scan_base_link` TF，避免和机器狗自带 TF 混在一起。
 
 如果现场 FAST_LIO 输出被改名，启动时传参：
 
@@ -327,7 +327,7 @@ ros2 launch scan_planner run.launch.py \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/your/state_estimation \
   body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=base_link \
+  body_odom_frame_id:=scan_base_link \
   body_odom_sensor_frame_id:=livox_frame \
   body_odom_world_frame_id:=lio_odom \
   body_odom_publish_tf:=false \
@@ -415,7 +415,7 @@ ros2 launch scan_planner run.launch.py \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=base_link \
+  body_odom_frame_id:=scan_base_link \
   body_odom_sensor_frame_id:=livox_frame \
   body_odom_world_frame_id:=lio_odom \
   body_odom_publish_tf:=false \
@@ -805,6 +805,12 @@ ros2 topic echo /your/camera/odom --once
 ## 12. 现场建议
 
 - 第一次上板把 `manager.max_vel`、`closed_loop_controller.max_vx` 保持在 `0.3~0.5` 更稳。
+- 真机默认用 `closed_loop_controller.drive_mode=pure_pursuit`：根据当前位置在
+  B-spline 上找最近点，再沿曲线前视，最后只发 `linear.x` 和 `angular.z`。
+  这更接近已验证的机器狗路径跟踪 demo。需要切回旧全向输出时设置
+  `CONTROLLER_DRIVE_MODE=omni`。
+- 纯追踪现场先用 `CONTROLLER_PURE_PURSUIT_SPEED=0.15~0.20`、
+  `CONTROLLER_LOOKAHEAD_DIST=0.45~0.60`，确认能绕障碍后再加速度。
 - 保持急停/遥控器可用。
 - 避免同时运行官方 SDK demo 和 `zsibot_cmd_bridge`。
 - 每次改 RK3588 SDK 配置后都重启运动控制。

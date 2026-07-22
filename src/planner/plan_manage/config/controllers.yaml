@@ -9,6 +9,13 @@ closed_loop_controller:
     max_vy: 0.15
     max_vyaw: 0.5
     finish_dist: 0.15
+    tracking_mode: path_follow
+    drive_mode: pure_pursuit
+    path_sample_dt: 0.05
+    lookahead_dist: 0.45
+    yaw_lookahead_dist: 0.55
+    min_path_speed: 0.08
+    pure_pursuit_speed: 0.20
 
 open_loop_controller:
   ros__parameters:

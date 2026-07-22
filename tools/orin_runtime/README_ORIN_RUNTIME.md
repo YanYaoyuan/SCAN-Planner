@@ -166,6 +166,23 @@ BODY_TO_SENSOR_Z=0.18 \
 ./run_real_planner_udp.sh
 ```
 
+真机默认使用更像路径跟踪 demo 的纯追踪输出：`controller_tracking_mode=path_follow`
+和 `controller_drive_mode=pure_pursuit`。这时控制器只输出 `linear.x` 和
+`angular.z`，`linear.y` 强制为 0，避免把机器狗当作稳定全向底盘。现场可以这样低速调：
+
+```bash
+CONTROLLER_PURE_PURSUIT_SPEED=0.15 \
+CONTROLLER_LOOKAHEAD_DIST=0.50 \
+CONTROLLER_MAX_VYAW=0.5 \
+./run_real_planner_udp.sh
+```
+
+如果要和旧的全向输出对比，临时加：
+
+```bash
+CONTROLLER_DRIVE_MODE=omni ./run_real_planner_udp.sh
+```
+
 ### 5.1 真机 TF 必须先整理
 
 不要让 SLAM 和机器狗底盘同时发布同名 `odom` 坐标系。当前 FAST_LIO 配置文件里的关键项是：
@@ -211,7 +228,7 @@ ros2 launch scan_planner run.launch.py \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=base_link \
+  body_odom_frame_id:=scan_base_link \
   body_odom_sensor_frame_id:=livox_frame \
   body_odom_world_frame_id:=lio_odom \
   body_odom_publish_tf:=false \
@@ -228,7 +245,7 @@ ros2 launch scan_planner run.launch.py \
   real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
-`body_to_sensor_*` 表示“机身 `base_link` 到激光 `livox_frame`”的外参，单位是米和弧度。上面的 0 只是占位，真机要填实际安装值；外参没确认前，不要发送导航 goal。
+`body_to_sensor_*` 表示“planner 机身 `scan_base_link` 到激光 `livox_frame`”的外参，单位是米和弧度。上面的 0 只是占位，真机要填实际安装值；外参没确认前，不要发送导航 goal。
 
 验证：
 
@@ -280,7 +297,7 @@ ros2 launch scan_planner run.launch.py \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=base_link \
+  body_odom_frame_id:=scan_base_link \
   body_odom_sensor_frame_id:=livox_frame \
   body_odom_world_frame_id:=lio_odom \
   body_odom_publish_tf:=false \

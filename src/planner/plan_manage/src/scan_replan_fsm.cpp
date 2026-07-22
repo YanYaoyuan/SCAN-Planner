@@ -87,7 +87,8 @@ namespace scan_planner
         "planning/go2_execution_frozen", 10,
         std::bind(&SCANReplanFSM::go2ExecutionFrozenCallback, this, std::placeholders::_1));
 
-    bspline_pub_ = node_->create_publisher<scan_planner_msgs::msg::Bspline>("planning/bspline", 10);
+    bspline_pub_ = node_->create_publisher<scan_planner_msgs::msg::Bspline>(
+        "planning/bspline", rclcpp::QoS(20).reliable().transient_local());
     data_disp_pub_ = node_->create_publisher<scan_planner_msgs::msg::DataDisp>("planning/data_display", 100);
     self_inflation_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "self_inflation", rclcpp::QoS(1).reliable().transient_local());

@@ -129,7 +129,7 @@ ros2 launch scan_planner run.launch.py \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=base_link \
+  body_odom_frame_id:=scan_base_link \
   body_odom_sensor_frame_id:=livox_frame \
   body_odom_world_frame_id:=lio_odom \
   body_odom_publish_tf:=false \

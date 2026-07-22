@@ -14,6 +14,12 @@ def _as_bool(value):
     return value.lower() in ("1", "true", "yes", "on")
 
 
+def _set_optional_float(context, overrides, launch_name, param_name):
+    value = LaunchConfiguration(launch_name).perform(context)
+    if value:
+        overrides[param_name] = float(value)
+
+
 def _setup(context):
     scan_share = get_package_share_directory("scan_planner")
     planner_yaml = os.path.join(scan_share, "config", "planner.yaml")
@@ -25,6 +31,8 @@ def _setup(context):
     )
     sensor_type = LaunchConfiguration("sensor_type").perform(context)
     controller_mode = LaunchConfiguration("controller_mode").perform(context)
+    controller_tracking_mode = LaunchConfiguration("controller_tracking_mode").perform(context)
+    controller_drive_mode = LaunchConfiguration("controller_drive_mode").perform(context)
     keypoints_file = LaunchConfiguration("keypoints_file").perform(context)
     use_zsibot_bridge = _as_bool(LaunchConfiguration("use_zsibot_bridge").perform(context))
     use_zsibot_udp_client = _as_bool(
@@ -106,6 +114,20 @@ def _setup(context):
         goal_frame_id = grid_frame_id
 
     common = {"use_sim_time": use_sim_time}
+    closed_loop_overrides = dict(common)
+    if controller_tracking_mode:
+        closed_loop_overrides["tracking_mode"] = controller_tracking_mode
+    if controller_drive_mode:
+        closed_loop_overrides["drive_mode"] = controller_drive_mode
+    for launch_name, param_name in (
+        ("controller_max_vx", "max_vx"),
+        ("controller_max_vy", "max_vy"),
+        ("controller_max_vyaw", "max_vyaw"),
+        ("controller_lookahead_dist", "lookahead_dist"),
+        ("controller_yaw_lookahead_dist", "yaw_lookahead_dist"),
+        ("controller_pure_pursuit_speed", "pure_pursuit_speed"),
+    ):
+        _set_optional_float(context, closed_loop_overrides, launch_name, param_name)
     planner_overrides = {
         **common,
         **intrinsics,
@@ -205,7 +227,7 @@ def _setup(context):
                 executable="closed_loop_controller",
                 name="closed_loop_controller",
                 output="screen",
-                parameters=[controllers_yaml, common],
+                parameters=[controllers_yaml, closed_loop_overrides],
                 remappings=[
                     ("body_pose", body_pose),
                     ("cmd_vel", cmd_vel),
@@ -310,6 +332,14 @@ def generate_launch_description():
             DeclareLaunchArgument("navi_mode", default_value="1"),
             DeclareLaunchArgument("sensor_type", default_value="lidar"),
             DeclareLaunchArgument("controller_mode", default_value="closed_loop"),
+            DeclareLaunchArgument("controller_tracking_mode", default_value=""),
+            DeclareLaunchArgument("controller_drive_mode", default_value=""),
+            DeclareLaunchArgument("controller_max_vx", default_value=""),
+            DeclareLaunchArgument("controller_max_vy", default_value=""),
+            DeclareLaunchArgument("controller_max_vyaw", default_value=""),
+            DeclareLaunchArgument("controller_lookahead_dist", default_value=""),
+            DeclareLaunchArgument("controller_yaw_lookahead_dist", default_value=""),
+            DeclareLaunchArgument("controller_pure_pursuit_speed", default_value=""),
             DeclareLaunchArgument("keypoints_file", default_value=""),
             DeclareLaunchArgument("use_gpu", default_value="false"),
             DeclareLaunchArgument("use_pcd_map", default_value="false"),
@@ -330,7 +360,7 @@ def generate_launch_description():
             DeclareLaunchArgument("use_lidar_to_body_odom", default_value="false"),
             DeclareLaunchArgument("lidar_odom_topic", default_value="/state_estimation"),
             DeclareLaunchArgument("body_odom_topic", default_value="/body_state_estimation"),
-            DeclareLaunchArgument("body_odom_frame_id", default_value="base_link"),
+            DeclareLaunchArgument("body_odom_frame_id", default_value="scan_base_link"),
             DeclareLaunchArgument("body_odom_sensor_frame_id", default_value="livox_frame"),
             DeclareLaunchArgument("body_odom_world_frame_id", default_value=""),
             DeclareLaunchArgument("body_odom_publish_tf", default_value="false"),
