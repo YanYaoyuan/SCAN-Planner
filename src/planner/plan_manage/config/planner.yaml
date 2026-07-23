@@ -2,35 +2,125 @@ scan_planner_node:
   ros__parameters:
     use_sim_time: false
 
+    # =========================
+    # FSM / local replanning
+    # =========================
+    # 1: 接收 /move_base_simple/goal 单目标; 2: 使用 fsm.waypoints;
+    # 3: 接收 /initial_path。真机调试一般先用 1。
     fsm.navi_mode: 1
+
+    # 距离当前局部轨迹起点超过该阈值后触发重规划，单位 m。
+    # 调小: 更频繁重规划，绕障更积极，但计算压力和轨迹抖动可能增加。
+    # 调大: 轨迹更稳定，但遇到新障碍时反应慢。
     fsm.thresh_replan: 1.0
+
+    # 当前局部轨迹已经接近全局目标时，不再重规划，单位 m。
+    # 调大: 末端更早停止重规划; 调小: 末端也会继续精修。
     fsm.thresh_no_replan: 0.1
+
+    # 局部规划前视距离，单位 m。它决定每次从全局路径上截取多远生成局部 B-spline。
+    # 调大: 更早看到远处障碍，绕障更从容，但局部地图必须足够大且计算更重。
+    # 调小: 更贴近当前位置，窄空间更灵活，但可能绕障反应偏晚。
     fsm.planning_horizon: 7.5
+
+    # 安全检查发现当前轨迹即将在该时间内撞障碍时进入 EMERGENCY_STOP，单位 s。
+    # 调小: 更早尝试重规划而不是急停; 调大: 更保守，接近障碍更容易急停。
     fsm.emergency_time: 1.0
+
+    # 重规划连续失败时是否进入 fail-safe / emergency stop。
     fsm.fail_safe: true
+
+    # 连续重规划失败次数上限。真机建议保守，不要太小，否则偶发点云噪声会频繁急停。
     fsm.max_replan_fail_count: 1000
 
+    # =========================
+    # Local occupancy map
+    # =========================
+    # 栅格分辨率，单位 m。所有膨胀半径和地图尺寸最终都会离散到这个尺度。
+    # 调小: 障碍边界更细、内存/CPU 增加; 调大: 更快但狭窄通道和薄障碍会更粗糙。
     grid_map.resolution: 0.05
+
+    # 滑动局部地图尺寸，单位 m。必须覆盖 planning_horizon 附近的主要障碍。
+    # 例如 planning_horizon=7.5，但地图 x/y 只有 10m，机器人在中心时前方可用约 5m。
+    # 真机如果看得远但地图小，规划会以为远处未知/越界，不利于绕障。
     grid_map.sliding_map_size_x: 10.0
     grid_map.sliding_map_size_y: 10.0
     grid_map.sliding_map_size_z: 5.0
+
+    # 每次点云更新时写入局部地图的范围，单位 m，通常不大于滑动地图半尺寸。
+    # z 范围过小会丢掉高处障碍，过大则引入天花板/远处噪声。
     grid_map.local_update_range_x: 5.0
     grid_map.local_update_range_y: 5.0
     grid_map.local_update_range_z: 2.5
+
+    # 是否让局部地图跟随机体/传感器滑动。真机一般保持 true。
     grid_map.map_sliding_en: true
+
+    # 机器人相对滑动地图中心移动超过该距离后，地图窗口平移，单位 m。
+    # 调小: 地图跟随更及时但更新更频繁; 调大: 更新少但边界附近更容易丢信息。
     grid_map.map_sliding_thresh: 0.2
-    grid_map.double_cylinder_radius: 0.25
+
+    # =========================
+    # Robot body / obstacle inflation
+    # =========================
+    # 自身体积近似为前后两个竖直圆柱，而不是一个点。
+    # getInflateOccupancy(pos, yaw) 会检查:
+    #   front = pos + double_cylinder_offset * heading
+    #   rear  = pos - double_cylinder_offset * heading
+    # 每个圆柱在膨胀占据层里按 double_cylinder_radius 检查碰撞。
+
+    # 单个圆柱半径，单位 m。它相当于机身半宽 + 安全余量，是最核心避障参数。
+    # 调大: 离墙更远、更不容易擦碰/撞墙，但窄通道可能过不去。
+    # 调小: 更敢贴边，窄通道通过率高，但实机更容易蹭障碍。
+    # zsl-1w 真机初期建议 0.28~0.35，确认不撞后再慢慢减。
+    # zsl-1w 宽度约 40cm， 
+    grid_map.double_cylinder_radius: 0.35
+
+    # 前后两个圆柱相对机身中心的偏移，单位 m。
+    # 机身等效长度大约是 2 * (double_cylinder_offset + double_cylinder_radius)。
+    # 调大: 更像长机身，转弯/绕障时前后端更不容易扫到墙。
+    # 调小: 更像圆形机器人，狭窄空间更容易规划通过，但长机身可能撞角。
+    # zsl-1w 长度约 55cm， 
     grid_map.double_cylinder_offset: 0.18
+
+    # 机身体高，单位 m。目前主要用于自身体积可视化，不是主要碰撞检测来源。
+    # 碰撞高度主要看 obstacles_inflation_z_up/down 和点云占据层。
     grid_map.body_height: 0.4
+
+    # 障碍物向上膨胀高度，单位 m。用于把占据点扩成有高度的障碍体。
+    # 调大: 低矮/稀疏点云更容易形成可避障碍，不容易钻到桌沿/墙边点云下面。
+    # 调小: 更容易认为低障碍可以跨过去。你遇到“明明有点云还撞墙”时，优先增大它。
     grid_map.obstacles_inflation_z_up: 0.1
+
+    # 障碍物向下膨胀高度，单位 m。用于补偿雷达只看到障碍上半部分或点云离地偏高。
+    # 调大: 墙/桌腿这类竖直障碍更容易落到机身碰撞高度内; 过大可能把地面噪声也变障碍。
     grid_map.obstacles_inflation_z_down: 0.4
-    grid_map.frame_id: world
+
+    # 规划/地图主世界坐标系。真机启动脚本会覆盖成 lio_odom。
+    grid_map.frame_id: lio_odom
+
+    # 可视化用的滑动地图坐标系名字。不要拿它替代 lio_odom/livox_frame 做算法输入。
     grid_map.sliding_map_frame_id: sliding_map
+
+    # 局部地图 z 方向起点，单位 m。通常保持 0；如果 SLAM z 原点不在地面，需要谨慎调整。
     grid_map.ground_height: 0.0
+
+    # 传感器类型: lidar 或 depth。真机 Livox 用 lidar。
     grid_map.sensor_type: lidar
+
+    # 点云是否已经在 grid_map.frame_id 世界系下。
+    # FAST-LIO 的 /cloud_registered 通常已经是 lio_odom 下点云，所以真机保持 true。
+    # 如果输入是传感器系点云，则应设 false 并正确提供 sensor_pose/extrinsic。
     grid_map.cloud_is_world: true
+
+    # 是否使用代码内置传感器外参把点云转到机体系。当前真机建议 false，
+    # 因为我们用 /body_state_estimation 处理 livox -> scan_base_link 外参。
     grid_map.need_extrinsic: false
 
+    # =========================
+    # Depth camera model
+    # =========================
+    # 只有 sensor_type=depth 时使用。Livox 点云模式下这些参数不会决定避障。
     grid_map.cx: 321.04638671875
     grid_map.cy: 243.44969177246094
     grid_map.fx: 387.229248046875
@@ -41,27 +131,78 @@ scan_planner_node:
     grid_map.k_depth_scaling_factor: 1000.0
     grid_map.skip_pixel: 2
 
+    # =========================
+    # Occupancy probability update
+    # =========================
+    # p_hit: 射线终点命中障碍后占据概率增加量。调大: 障碍更快变实; 噪声也更容易变障碍。
     grid_map.p_hit: 0.85
+
+    # p_miss: 射线穿过空闲区域时占据概率降低量。调小: 清空更强; 太小会把真实稀疏障碍清掉。
     grid_map.p_miss: 0.30
+
+    # p_min/p_max: 单个 voxel 概率上下限，避免一次观测永久决定占据/空闲。
     grid_map.p_min: 0.12
     grid_map.p_max: 0.98
+
+    # p_occ: 大于该概率才认为 voxel 被占据，并参与膨胀和碰撞检查。
+    # 调低: 更保守，噪声更容易成为障碍; 调高: 更激进，稀疏墙面可能漏检。
     grid_map.p_occ: 0.80
+
+    # 射线清空最大长度，单位 m。应和雷达可靠距离、local_update_range 匹配。
     grid_map.max_ray_length: 5.0
+
+    # occupancy 可视化采样高度，单位 m。只影响显示，不直接影响规划。
+    # 你看到 /grid_map/occupancy 上下偏差时，不要只看它；同时看 /grid_map/occupancy_inflate。
     grid_map.vis_height: 0.3
     grid_map.show_occ_time: false
 
+    # =========================
+    # Trajectory generation / curve feasibility
+    # =========================
+    # 局部轨迹速度上限，单位 m/s。影响 B-spline 时间参数化和可行性检查。
+    # 真狗先保持 0.3~0.5；这里调大不代表最终 cmd 一定更快，controller/bridge 也有限速。
     manager.max_vel: 0.75
+
+    # 局部轨迹加速度上限，单位 m/s^2。调小会让曲线更缓、更不贴急弯，但绕障空间需求更大。
     manager.max_acc: 0.5
+
+    # jerk 上限，单位 m/s^3。当前主要用于轨迹可行性/时间重分配语义，过大曲线会更猛。
     manager.max_jerk: 4.0
+
+    # B-spline 控制点期望间距，单位 m。它决定曲线自由度和初始路径采样密度。
+    # 调小: 曲线更能贴着障碍绕，优化变量更多、可能抖。
+    # 调大: 曲线更平滑、计算更轻，但窄障碍绕不开。
     manager.control_points_distance: 0.2
+
+    # 可行性检查容忍度。调大更容易接受速度/加速度略超限的轨迹；调小更严格。
     manager.feasibility_tolerance: 0.5
+
+    # manager 内部使用的局部规划前视距离，建议和 fsm.planning_horizon 保持一致。
     manager.planning_horizon: 7.5
 
+    # =========================
+    # B-spline optimization weights
+    # =========================
+    # 平滑项权重。调大: 曲线更圆滑、少急弯; 过大会牺牲绕障贴合能力。
     optimization.lambda_smooth: 1.0
+
+    # 碰撞代价权重。调大: 更强烈远离障碍; 过大会导致轨迹被推得很弯甚至优化失败。
     optimization.lambda_collision: 1.0
+
+    # 动力学可行性权重，约束速度/加速度。调大: 更严格不超 max_vel/max_acc。
     optimization.lambda_feasibility: 0.1
+
+    # 贴合初始路径/参考路径权重。调大: 更像 A* / 初始路径; 调小: 优化器更自由地绕开障碍。
     optimization.lambda_fitness: 1.0
+
+    # 优化器安全距离，单位 m。控制点离膨胀障碍小于该距离时产生碰撞代价。
+    # 注意它叠加在 grid_map.double_cylinder_radius 的膨胀占据层之外。
+    # 真机想更保守: 优先增大 double_cylinder_radius，其次增大 dist0。
     optimization.dist0: 0.2
+
+    # 优化器内部速度/加速度约束，建议和 manager.max_vel/max_acc 保持一致。
     optimization.max_vel: 0.75
     optimization.max_acc: 0.5
+
+    # B-spline 阶数。3 表示三次 B-spline，通常不要改。
     optimization.order: 3

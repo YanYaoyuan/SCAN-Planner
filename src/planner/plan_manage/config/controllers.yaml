@@ -1,30 +1,86 @@
 closed_loop_controller:
   ros__parameters:
     use_sim_time: false
+
+    # =========================
+    # Common closed-loop limits
+    # =========================
+    # time 模式下用于估计朝向的时间前视，单位 s。path_follow 模式主要看空间前视。
     time_forward: 0.8
+
+    # 航向误差大于该值时，控制器冻结平移，只原地修正 yaw，单位 rad。
+    # 0.8 rad 约 46 度。调小: 更保守，转正了才走; 调大: 更愿意边走边转。
     heading_error_threshold: 0.8
+
+    # 位置误差比例增益。omni 模式下作用更明显；pure_pursuit 模式主要用前视几何算 yaw。
     kp_pos: 0.8
+
+    # 航向误差比例增益。越大越快打角速度，也更容易碰到 max_vyaw 限幅。
     kp_yaw: 1.5
+
+    # 控制器输出限幅，单位分别为 m/s、m/s、rad/s。
+    # 真机最终还会再经过 zsibot bridge 限幅。首次测试建议 vx 0.15~0.25, vy 不依赖。
     max_vx: 0.3
     max_vy: 0.15
     max_vyaw: 0.5
+
+    # 距离轨迹终点小于该值时发布零速度，单位 m。
     finish_dist: 0.15
+
+    # =========================
+    # How to pick target on B-spline
+    # =========================
+    # path_follow: 推荐真机模式。先找当前位置在 B-spline 采样路径上的最近点，
+    # 再沿曲线弧长前视 lookahead_dist，避免机器狗没跟上时还按系统时间追远处点。
+    # time: 旧模式。按 exec_time 直接取 B-spline 时间点，仿真可用，真机滞后时容易抄近路。
     tracking_mode: path_follow
+
+    # =========================
+    # How to convert target into cmd_vel
+    # =========================
+    # pure_pursuit: 推荐真机模式。只输出 linear.x 和 angular.z，linear.y 强制为 0。
+    # 适合横移能力弱、SDK 对 vy 有死区或四足更适合前进转向的情况。
+    # omni: 旧全向模式。输出 linear.x、linear.y、angular.z，要求机器狗横移响应稳定。
     drive_mode: pure_pursuit
+
+    # B-spline 采样时间间隔，单位 s。用于 path_follow 的最近点搜索和可视化 /planning/controller_bspline。
+    # 调小: 最近点更准、CPU 稍高; 调大: 更轻但前视点可能跳。
     path_sample_dt: 0.05
+
+    # pure_pursuit/path_follow 的空间前视距离，单位 m。
+    # 调小: 更贴路径、转弯更急、容易抖; 调大: 更顺滑、绕障提前，但窄处可能切弯。
+    # zsl-1w 初期建议 0.45~0.60。
     lookahead_dist: 0.45
+
+    # 用于估计期望朝向/局部切线的前视距离，单位 m。
+    # 通常略大于 lookahead_dist，让 yaw 看得更远一点，转向更平滑。
     yaw_lookahead_dist: 0.55
+
+    # path_follow 中参考路径速度的下限，单位 m/s。避免 B-spline 导数很小时完全不走。
     min_path_speed: 0.08
+
+    # pure_pursuit 的固定前进速度，单位 m/s。实际输出还受 max_vx 限制。
+    # 真机第一次绕障建议 0.15~0.20；确认转得过来后再增加。
     pure_pursuit_speed: 0.20
 
 open_loop_controller:
   ros__parameters:
     use_sim_time: false
+
+    # 仿真/open_loop 用于发布虚拟 odom 的坐标系，真机 closed_loop 不用它控制底盘。
     frame_id: world
     child_frame_id: base
+
+    # 虚拟 odom 发布频率，单位 Hz。
     publish_rate: 100.0
+
+    # 根据轨迹速度估计 yaw 时的最小速度，单位 m/s。低于该值保持上一帧 yaw。
     yaw_min_speed: 0.05
+
+    # 轨迹结束后是否保持终点 odom。仿真用。
     hold_final_position: true
+
+    # 仿真初始位姿。
     init_x: -19.0
     init_y: 1.0
     init_z: 0.3
@@ -33,15 +89,25 @@ open_loop_controller:
 go2_kinematic_sim:
   ros__parameters:
     use_sim_time: false
+
+    # 简化运动学仿真初始位姿。
     init_x: -19.0
     init_y: 1.0
     init_z: 0.3
     init_yaw: 0.0
+
+    # 简化运动学仿真的速度限幅，和 closed_loop_controller 对齐可让仿真更接近真机。
     max_vx: 0.3
     max_vy: 0.15
     max_vyaw: 0.5
+
+    # 超过该时间没有 cmd_vel 时，仿真机器人停下，单位 s。
     cmd_timeout: 0.3
+
+    # 仿真积分频率，单位 Hz。
     sim_rate: 100.0
+
+    # 是否发布 TF。当前 run.launch.py 中会覆盖为 false，避免和其他 TF 冲突。
     publish_tf: true
     frame_id: world
     child_frame_id: base
@@ -49,6 +115,8 @@ go2_kinematic_sim:
 go2_gait_publisher:
   ros__parameters:
     use_sim_time: false
+
+    # 仅用于可视化步态动画，不参与真机避障和底盘控制。
     rate: 60.0
     gait_frequency: 2.2
     min_walk_speed: 0.05
