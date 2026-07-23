@@ -86,6 +86,7 @@ open_loop_controller:
     init_z: 0.3
     init_yaw: 0.0
 
+# not use
 go2_kinematic_sim:
   ros__parameters:
     use_sim_time: false
@@ -111,7 +112,7 @@ go2_kinematic_sim:
     publish_tf: true
     frame_id: world
     child_frame_id: base
-
+# not use
 go2_gait_publisher:
   ros__parameters:
     use_sim_time: false

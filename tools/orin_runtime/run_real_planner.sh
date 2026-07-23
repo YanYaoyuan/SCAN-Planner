@@ -12,9 +12,12 @@ BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation}"
 GRID_FRAME_ID="${GRID_FRAME_ID:-lio_odom}"
 BODY_FRAME_ID="${BODY_FRAME_ID:-scan_base_link}"
 SENSOR_FRAME_ID="${SENSOR_FRAME_ID:-livox_frame}"
-BODY_TO_SENSOR_X="${BODY_TO_SENSOR_X:-0.0}"
-BODY_TO_SENSOR_Y="${BODY_TO_SENSOR_Y:-0.0}"
-BODY_TO_SENSOR_Z="${BODY_TO_SENSOR_Z:-0.0}"
+# Calibrated scan_base_link -> livox_frame translation from
+# doc/calibration_results.yaml:
+#   lidar_front -> imu_front + imu_front -> base
+BODY_TO_SENSOR_X="${BODY_TO_SENSOR_X:-0.13011}"
+BODY_TO_SENSOR_Y="${BODY_TO_SENSOR_Y:--0.02329}"
+BODY_TO_SENSOR_Z="${BODY_TO_SENSOR_Z:-0.17598}"
 BODY_TO_SENSOR_ROLL="${BODY_TO_SENSOR_ROLL:-0.0}"
 BODY_TO_SENSOR_PITCH="${BODY_TO_SENSOR_PITCH:-0.0}"
 BODY_TO_SENSOR_YAW="${BODY_TO_SENSOR_YAW:-0.0}"
