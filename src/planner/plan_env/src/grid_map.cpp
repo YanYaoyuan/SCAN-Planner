@@ -1,6 +1,7 @@
 #include "plan_env/grid_map.h"
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
@@ -62,8 +63,14 @@ void GridMap::initMap(rclcpp::Node *node)
   load_parameter(node_, "grid_map.ground_height", mp_.ground_height_, 0.0);
 
   load_parameter(node_, "grid_map.sensor_type", mp_.sensor_type_, string("lidar"));
+  load_parameter(node_, "grid_map.sensor_frame_id", mp_.sensor_frame_id_, string("livox_frame"));
+  load_parameter(node_, "grid_map.lidar_sync_tolerance", mp_.lidar_sync_tolerance_, 0.05);
   load_parameter(node_, "grid_map.cloud_is_world", mp_.cloud_is_world_, true);
   load_parameter(node_, "grid_map.need_extrinsic", mp_.need_extrinsic_, true);
+  if (!std::isfinite(mp_.lidar_sync_tolerance_) ||
+      mp_.lidar_sync_tolerance_ < 0.0)
+    throw std::invalid_argument(
+        "grid_map.lidar_sync_tolerance must be finite and non-negative");
 
   mp_.lidar_extrinsic_ <<
       1.0, 0.0, 0.0, -0.01100,
@@ -148,12 +155,18 @@ void GridMap::initMap(rclcpp::Node *node)
   }
   else if (mp_.sensor_type_ == "lidar")
   {
-    lidar_pose_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
-        "sensor_pose", rclcpp::SensorDataQoS(),
-        std::bind(&GridMap::sensorPoseCallback, this, std::placeholders::_1));
-    cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "cloud", rclcpp::SensorDataQoS(),
-        std::bind(&GridMap::cloudCallback, this, std::placeholders::_1));
+    lidar_cloud_sub_ =
+        std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>();
+    lidar_pose_sub_ =
+        std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>();
+    lidar_cloud_sub_->subscribe(node_, "cloud", rmw_qos_profile_sensor_data);
+    lidar_pose_sub_->subscribe(node_, "sensor_pose", rmw_qos_profile_sensor_data);
+    sync_cloud_pose_.reset(new message_filters::Synchronizer<SyncPolicyCloudPose>(
+        SyncPolicyCloudPose(50), *lidar_cloud_sub_, *lidar_pose_sub_));
+    sync_cloud_pose_->registerCallback(
+        std::bind(
+            &GridMap::lidarCloudPoseCallback, this,
+            std::placeholders::_1, std::placeholders::_2));
   }
 
   sliding_map_frame_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
@@ -863,8 +876,66 @@ void GridMap::sensorPoseCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &
   updateSlidingMap(md_.ray_pos_);
 }
 
+void GridMap::lidarCloudPoseCallback(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr &cloud,
+    const nav_msgs::msg::Odometry::ConstSharedPtr &pose)
+{
+  if (!cloud || !pose)
+    return;
+
+  const double stamp_error =
+      std::abs((rclcpp::Time(cloud->header.stamp) -
+                rclcpp::Time(pose->header.stamp)).seconds());
+  if (stamp_error > mp_.lidar_sync_tolerance_)
+  {
+    RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] reject cloud/pose pair: timestamp difference %.3fs exceeds %.3fs",
+        stamp_error, mp_.lidar_sync_tolerance_);
+    return;
+  }
+  if (pose->header.frame_id != mp_.frame_id_)
+  {
+    RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] reject sensor_pose frame '%s'; expected '%s'",
+        pose->header.frame_id.c_str(), mp_.frame_id_.c_str());
+    return;
+  }
+  if (!mp_.sensor_frame_id_.empty() &&
+      pose->child_frame_id != mp_.sensor_frame_id_)
+  {
+    RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] reject sensor_pose child '%s'; expected '%s'",
+        pose->child_frame_id.c_str(), mp_.sensor_frame_id_.c_str());
+    return;
+  }
+  const std::string expected_cloud_frame =
+      mp_.cloud_is_world_ ? mp_.frame_id_ : mp_.sensor_frame_id_;
+  if (cloud->header.frame_id != expected_cloud_frame)
+  {
+    RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] reject cloud frame '%s'; expected '%s'",
+        cloud->header.frame_id.c_str(), expected_cloud_frame.c_str());
+    return;
+  }
+
+  sensorPoseCallback(pose);
+  cloudCallback(cloud);
+}
+
 void GridMap::slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &pose)
 {
+  if (pose->header.frame_id != mp_.frame_id_)
+  {
+    RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] reject body_pose frame '%s'; expected '%s'",
+        pose->header.frame_id.c_str(), mp_.frame_id_.c_str());
+    return;
+  }
   const geometry_msgs::msg::Point &pos = pose->pose.pose.position;
   md_.sliding_map_frame_pos_ = Eigen::Vector3d(pos.x, pos.y, pos.z);
 }

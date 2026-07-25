@@ -63,6 +63,12 @@ closed_loop_controller:
     # 真机第一次绕障建议 0.15~0.20；确认转得过来后再增加。
     pure_pursuit_speed: 0.20
 
+    # 超过该时间没有收到合法 body_pose，立即清除轨迹并持续发布零速度。
+    odom_timeout: 0.30
+
+    # 真机由 launch 覆盖成 lio_map；留空时跟随收到的轨迹/里程计 frame。
+    expected_frame_id: ""
+
 open_loop_controller:
   ros__parameters:
     use_sim_time: false

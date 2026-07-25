@@ -34,6 +34,7 @@ namespace scan_planner
     need_hover_stop_ = false;
     replan_fail_count_ = 0;
     last_freeze_update_time_ = node_->now();
+    last_odom_receive_time_ = node_->now();
 
     /*  fsm param  */
     navi_mode_ = load_parameter<int>(node_, "fsm.navi_mode", -1);
@@ -48,7 +49,12 @@ namespace scan_planner
     self_double_cylinder_radius_ = load_parameter<double>(node_, "grid_map.double_cylinder_radius", 0.0);
     self_double_cylinder_offset_ = load_parameter<double>(node_, "grid_map.double_cylinder_offset", 0.0);
     body_height_ = load_parameter<double>(node_, "grid_map.body_height", 0.4);
+    reference_path_height_offset_ =
+        load_parameter<double>(node_, "fsm.reference_path_height_offset", 0.0);
+    odom_timeout_ = std::max(0.05, load_parameter<double>(node_, "fsm.odom_timeout", 0.3));
     self_inflation_frame_id_ = load_parameter<std::string>(node_, "grid_map.frame_id", "world");
+    expected_odom_frame_ =
+        load_parameter<std::string>(node_, "fsm.expected_odom_frame", self_inflation_frame_id_);
     goal_frame_id_ = load_parameter<std::string>(node_, "fsm.goal_frame_id", self_inflation_frame_id_);
     goal_transform_timeout_ = load_parameter<double>(node_, "fsm.goal_transform_timeout", 0.2);
     if (goal_frame_id_.empty())
@@ -99,7 +105,8 @@ namespace scan_planner
           std::bind(&SCANReplanFSM::rvizGoalCallback, this, std::placeholders::_1));
     else if (navi_mode_ == NAVI_MODE::REFERENCE_PATH)
       path_sub_ = node_->create_subscription<nav_msgs::msg::Path>(
-          "initial_path", 1, std::bind(&SCANReplanFSM::pathCallback, this, std::placeholders::_1));
+          "initial_path", rclcpp::QoS(1).reliable().transient_local(),
+          std::bind(&SCANReplanFSM::pathCallback, this, std::placeholders::_1));
     else if (navi_mode_ == NAVI_MODE::PRESET_TARGET)
       RCLCPP_INFO(node_->get_logger(), "Preset waypoint mode will start after the first odometry message");
     else
@@ -415,7 +422,7 @@ namespace scan_planner
       Eigen::Vector3d wp;
       wp(0) = transformed_pose.pose.position.x;
       wp(1) = transformed_pose.pose.position.y;
-      wp(2) = transformed_pose.pose.position.z + body_height_; // Adjust for body height
+      wp(2) = transformed_pose.pose.position.z + reference_path_height_offset_;
       waypoints.push_back(wp);
     }
     bool success = planGlobalTrajByWaypoints(waypoints);
@@ -442,6 +449,36 @@ namespace scan_planner
 
   void SCANReplanFSM::odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
   {
+    if (!msg)
+      return;
+    const auto &position = msg->pose.pose.position;
+    const auto &orientation = msg->pose.pose.orientation;
+    const auto &linear = msg->twist.twist.linear;
+    const double quaternion_norm2 =
+        orientation.w * orientation.w + orientation.x * orientation.x +
+        orientation.y * orientation.y + orientation.z * orientation.z;
+    const bool finite =
+        std::isfinite(position.x) && std::isfinite(position.y) &&
+        std::isfinite(position.z) && std::isfinite(linear.x) &&
+        std::isfinite(linear.y) && std::isfinite(linear.z) &&
+        std::isfinite(quaternion_norm2) && quaternion_norm2 > 1.0e-12;
+    if (!finite)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
+          "Rejecting body_pose with non-finite values or invalid quaternion");
+      return;
+    }
+    if (msg->header.frame_id.empty() ||
+        (!expected_odom_frame_.empty() &&
+         msg->header.frame_id != expected_odom_frame_))
+    {
+      RCLCPP_ERROR_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
+          "Rejecting body_pose in frame '%s'; expected '%s'",
+          msg->header.frame_id.c_str(), expected_odom_frame_.c_str());
+      return;
+    }
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;
@@ -463,8 +500,11 @@ namespace scan_planner
     odom_orient_.x() = msg->pose.pose.orientation.x;
     odom_orient_.y() = msg->pose.pose.orientation.y;
     odom_orient_.z() = msg->pose.pose.orientation.z;
+    odom_orient_.normalize();
 
     have_odom_ = true;
+    last_odom_receive_time_ = node_->now();
+    odom_timeout_active_ = false;
     publishSelfInflationMarker();
     if (navi_mode_ == NAVI_MODE::PRESET_TARGET && !preset_started_)
     {
@@ -582,6 +622,28 @@ namespace scan_planner
   void SCANReplanFSM::execFSMCallback()
   {
     updateLocalTrajTimeFreeze();
+
+    if (have_odom_ &&
+        (node_->now() - last_odom_receive_time_).seconds() > odom_timeout_)
+    {
+      if (!odom_timeout_active_)
+      {
+        RCLCPP_ERROR(
+            node_->get_logger(),
+            "body_pose timed out (limit %.2fs); clearing target and trajectory",
+            odom_timeout_);
+        publishTrajectoryClear("body_pose timeout");
+      }
+      odom_timeout_active_ = true;
+      have_odom_ = false;
+      trigger_ = false;
+      have_target_ = false;
+      have_new_target_ = false;
+      active_waypoints_.clear();
+      preset_started_ = false;
+      exec_state_ = FSM_EXEC_STATE::INIT;
+      return;
+    }
 
     static int fsm_num = 0;
     fsm_num++;

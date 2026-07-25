@@ -68,7 +68,7 @@ target_include_directories(scan_planner_node PRIVATE include)
 ament_target_dependencies(scan_planner_node ${scan_planner_dependencies})
 target_link_libraries(scan_planner_node Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
 
-foreach(target open_loop_controller closed_loop_controller go2_kinematic_sim go2_gait_publisher lidar_to_body_odom)
+foreach(target open_loop_controller closed_loop_controller go2_kinematic_sim go2_gait_publisher lidar_to_body_odom global_path_publisher)
   add_executable(${target} src/${target}.cpp)
   target_include_directories(${target} PRIVATE include)
   ament_target_dependencies(${target}
@@ -79,7 +79,7 @@ endforeach()
 
 install(TARGETS
   scan_planner_node open_loop_controller closed_loop_controller
-  go2_kinematic_sim go2_gait_publisher lidar_to_body_odom
+  go2_kinematic_sim go2_gait_publisher lidar_to_body_odom global_path_publisher
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME} OPTIONAL)

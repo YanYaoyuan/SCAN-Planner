@@ -63,7 +63,10 @@ namespace scan_planner
     double self_inflation_z_up_, self_inflation_z_down_;
     double self_double_cylinder_radius_, self_double_cylinder_offset_;
     double body_height_;
+    double reference_path_height_offset_;
+    double odom_timeout_;
     std::string self_inflation_frame_id_;
+    std::string expected_odom_frame_;
     std::string goal_frame_id_;
     double goal_transform_timeout_;
 
@@ -73,11 +76,13 @@ namespace scan_planner
     bool rviz_height_ready_;
     bool go2_execution_frozen_;
     bool enable_fail_safe_, need_hover_stop_;
+    bool odom_timeout_active_{false};
     FSM_EXEC_STATE exec_state_;
     int continuously_called_times_{0};
     int replan_fail_count_{0};
     int max_replan_fail_count_{1000};
     rclcpp::Time last_freeze_update_time_;
+    rclcpp::Time last_odom_receive_time_;
 
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
     Eigen::Quaterniond odom_orient_;

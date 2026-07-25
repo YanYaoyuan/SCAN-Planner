@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -22,7 +23,7 @@ public:
     sensor_frame_id_ = declare_parameter<std::string>("sensor_frame_id", "livox_frame");
     world_frame_id_ = declare_parameter<std::string>("world_frame_id", "");
     publish_tf_ = declare_parameter<bool>("publish_tf", false);
-    transform_twist_ = declare_parameter<bool>("transform_twist", false);
+    transform_twist_ = declare_parameter<bool>("transform_twist", true);
     status_log_period_ = declare_parameter<double>("status_log_period", 2.0);
 
     const double x = declare_parameter<double>("body_to_sensor.x", 0.0);
@@ -62,6 +63,30 @@ private:
     return std::isfinite(norm2) && norm2 > 1e-12;
   }
 
+  static Eigen::Matrix3d skew(const Eigen::Vector3d &v)
+  {
+    Eigen::Matrix3d matrix;
+    matrix << 0.0, -v.z(), v.y(),
+              v.z(), 0.0, -v.x(),
+              -v.y(), v.x(), 0.0;
+    return matrix;
+  }
+
+  static void transformCovariance(
+      const std::array<double, 36> &input,
+      const Eigen::Matrix<double, 6, 6> &jacobian,
+      std::array<double, 36> &output)
+  {
+    Eigen::Matrix<double, 6, 6> covariance;
+    for (int row = 0; row < 6; ++row)
+      for (int col = 0; col < 6; ++col)
+        covariance(row, col) = input[6 * row + col];
+    covariance = jacobian * covariance * jacobian.transpose();
+    for (int row = 0; row < 6; ++row)
+      for (int col = 0; col < 6; ++col)
+        output[6 * row + col] = covariance(row, col);
+  }
+
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
   {
     if (!msg)
@@ -72,13 +97,30 @@ private:
                            "Ignoring sensor odom with invalid orientation");
       return;
     }
-    if (!sensor_frame_id_.empty() && !msg->child_frame_id.empty() &&
-        msg->child_frame_id != sensor_frame_id_)
+    const auto &position = msg->pose.pose.position;
+    if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+        !std::isfinite(position.z))
     {
-      RCLCPP_WARN_THROTTLE(
+      RCLCPP_ERROR_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "sensor_odom child_frame_id is '%s', expected '%s'",
+          "Ignoring sensor odom with non-finite position");
+      return;
+    }
+    if (!world_frame_id_.empty() && msg->header.frame_id != world_frame_id_)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting sensor_odom frame '%s'; expected '%s'",
+          msg->header.frame_id.c_str(), world_frame_id_.c_str());
+      return;
+    }
+    if (!sensor_frame_id_.empty() && msg->child_frame_id != sensor_frame_id_)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting sensor_odom child_frame_id '%s'; expected '%s'",
           msg->child_frame_id.c_str(), sensor_frame_id_.c_str());
+      return;
     }
 
     Eigen::Quaterniond q_ws(
@@ -109,20 +151,38 @@ private:
     body_odom.pose.pose.orientation.z = q_wb.z();
     body_odom.pose.pose.orientation.w = q_wb.w();
 
+    Eigen::Matrix<double, 6, 6> pose_jacobian =
+        Eigen::Matrix<double, 6, 6>::Identity();
+    pose_jacobian.block<3, 3>(0, 3) =
+        body_to_world_r * skew(body_to_sensor_t_);
+    transformCovariance(
+        msg->pose.covariance, pose_jacobian, body_odom.pose.covariance);
+
     if (transform_twist_)
     {
       const Eigen::Vector3d linear_sensor(
           msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
       const Eigen::Vector3d angular_sensor(
           msg->twist.twist.angular.x, msg->twist.twist.angular.y, msg->twist.twist.angular.z);
-      const Eigen::Vector3d linear_body = body_to_sensor_r_ * linear_sensor;
       const Eigen::Vector3d angular_body = body_to_sensor_r_ * angular_sensor;
+      const Eigen::Vector3d linear_body =
+          body_to_sensor_r_ * linear_sensor +
+          body_to_sensor_t_.cross(angular_body);
       body_odom.twist.twist.linear.x = linear_body.x();
       body_odom.twist.twist.linear.y = linear_body.y();
       body_odom.twist.twist.linear.z = linear_body.z();
       body_odom.twist.twist.angular.x = angular_body.x();
       body_odom.twist.twist.angular.y = angular_body.y();
       body_odom.twist.twist.angular.z = angular_body.z();
+
+      Eigen::Matrix<double, 6, 6> twist_jacobian =
+          Eigen::Matrix<double, 6, 6>::Zero();
+      twist_jacobian.block<3, 3>(0, 0) = body_to_sensor_r_;
+      twist_jacobian.block<3, 3>(0, 3) =
+          skew(body_to_sensor_t_) * body_to_sensor_r_;
+      twist_jacobian.block<3, 3>(3, 3) = body_to_sensor_r_;
+      transformCovariance(
+          msg->twist.covariance, twist_jacobian, body_odom.twist.covariance);
     }
 
     body_pub_->publish(body_odom);

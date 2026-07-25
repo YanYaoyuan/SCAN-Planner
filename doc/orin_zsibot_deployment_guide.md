@@ -854,3 +854,22 @@ file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_bridge
 正常应显示 `ELF 64-bit ... ARM aarch64`。
 
 注意：sysroot 里的 `gcc/g++` 是 ARM64 板端原生编译器，不是 x86 可直接运行的交叉编译器；开发机上直接执行会报 `aarch64-binfmt-P: Could not open '/lib/ld-linux-aarch64.so.1'`。本仓库通过 `qemu-aarch64-static` wrapper 解决这个问题，因此编译速度会比普通交叉编译慢。
+# 重要：当前真机坐标链路
+
+本指南后文保留了早期 `lio_odom` 调试流程，便于回放旧 bag；它不再代表当前真机
+默认配置。当前真机运行统一使用 `lio_map`：
+
+```text
+/state_estimation_global
+/body_state_estimation_global
+/cloud_registered_global
+/planning/global_path
+/planning/bspline
+/planning/local_path
+```
+
+请优先阅读
+[`SCAN_Planner_修改清单.md`](./SCAN_Planner_修改清单.md)，并直接使用
+`tools/orin_runtime/run_real_planner.sh` 或
+`tools/orin_runtime/run_real_planner_udp.sh`。不要把后文旧命令中的
+`lio_odom`、`/state_estimation`、`/cloud_registered` 原样用于当前真机自动导航。

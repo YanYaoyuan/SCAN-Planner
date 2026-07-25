@@ -21,7 +21,7 @@ scan_planner_node:
     # 局部规划前视距离，单位 m。它决定每次从全局路径上截取多远生成局部 B-spline。
     # 调大: 更早看到远处障碍，绕障更从容，但局部地图必须足够大且计算更重。
     # 调小: 更贴近当前位置，窄空间更灵活，但可能绕障反应偏晚。
-    fsm.planning_horizon: 7.5
+    fsm.planning_horizon: 4.0
 
     # 安全检查发现当前轨迹即将在该时间内撞障碍时进入 EMERGENCY_STOP，单位 s。
     # 调小: 更早尝试重规划而不是急停; 调大: 更保守，接近障碍更容易急停。
@@ -33,6 +33,13 @@ scan_planner_node:
     # 连续重规划失败次数上限。真机建议保守，不要太小，否则偶发点云噪声会频繁急停。
     fsm.max_replan_fail_count: 1000
 
+    # body_pose 超时后立即清除局部轨迹，等待新的合法里程计和目标。
+    fsm.odom_timeout: 0.30
+    fsm.expected_odom_frame: lio_map
+
+    # /planning/global_path 已表示机体中心高度，不再重复叠加 body_height。
+    fsm.reference_path_height_offset: 0.0
+
     # =========================
     # Local occupancy map
     # =========================
@@ -41,8 +48,7 @@ scan_planner_node:
     grid_map.resolution: 0.05
 
     # 滑动局部地图尺寸，单位 m。必须覆盖 planning_horizon 附近的主要障碍。
-    # 例如 planning_horizon=7.5，但地图 x/y 只有 10m，机器人在中心时前方可用约 5m。
-    # 真机如果看得远但地图小，规划会以为远处未知/越界，不利于绕障。
+    # 当前 planning_horizon=4.0，地图 x/y 为 10m，保留约 1m 的边界余量。
     grid_map.sliding_map_size_x: 10.0
     grid_map.sliding_map_size_y: 10.0
     grid_map.sliding_map_size_z: 5.0
@@ -96,10 +102,10 @@ scan_planner_node:
     # 调大: 墙/桌腿这类竖直障碍更容易落到机身碰撞高度内; 过大可能把地面噪声也变障碍。
     grid_map.obstacles_inflation_z_down: 0.4
 
-    # 规划/地图主世界坐标系。真机启动脚本会覆盖成 lio_odom。
-    grid_map.frame_id: lio_odom
+    # 规划、局部地图、全局路径和控制统一使用重定位全局地图坐标。
+    grid_map.frame_id: lio_map
 
-    # 可视化用的滑动地图坐标系名字。不要拿它替代 lio_odom/livox_frame 做算法输入。
+    # 可视化用的滑动地图坐标系名字。不要拿它替代 lio_map/livox_frame 做算法输入。
     grid_map.sliding_map_frame_id: sliding_map
 
     # 局部地图 z 方向起点，单位 m。通常保持 0；如果 SLAM z 原点不在地面，需要谨慎调整。
@@ -107,9 +113,11 @@ scan_planner_node:
 
     # 传感器类型: lidar 或 depth。真机 Livox 用 lidar。
     grid_map.sensor_type: lidar
+    grid_map.sensor_frame_id: livox_frame
+    grid_map.lidar_sync_tolerance: 0.05
 
     # 点云是否已经在 grid_map.frame_id 世界系下。
-    # FAST-LIO 的 /cloud_registered 通常已经是 lio_odom 下点云，所以真机保持 true。
+    # SLAM 的 /cloud_registered_global 已经是 lio_map 下点云，所以真机保持 true。
     # 如果输入是传感器系点云，则应设 false 并正确提供 sensor_pose/extrinsic。
     grid_map.cloud_is_world: true
 
@@ -178,7 +186,7 @@ scan_planner_node:
     manager.feasibility_tolerance: 0.5
 
     # manager 内部使用的局部规划前视距离，建议和 fsm.planning_horizon 保持一致。
-    manager.planning_horizon: 7.5
+    manager.planning_horizon: 4.0
 
     # =========================
     # B-spline optimization weights

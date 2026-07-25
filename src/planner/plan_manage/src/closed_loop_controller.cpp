@@ -41,6 +41,8 @@ public:
     yaw_lookahead_dist_ = std::max(0.05, declare_parameter<double>("yaw_lookahead_dist", 0.45));
     min_path_speed_ = std::max(0.0, declare_parameter<double>("min_path_speed", 0.08));
     pure_pursuit_speed_ = std::max(0.0, declare_parameter<double>("pure_pursuit_speed", 0.20));
+    odom_timeout_ = std::max(0.05, declare_parameter<double>("odom_timeout", 0.30));
+    expected_frame_id_ = declare_parameter<std::string>("expected_frame_id", "");
     if (tracking_mode_ != "path_follow" && tracking_mode_ != "time")
     {
       RCLCPP_WARN(get_logger(), "Unknown tracking_mode '%s'; falling back to path_follow",
@@ -64,6 +66,8 @@ public:
     execution_frozen_pub_ = create_publisher<std_msgs::msg::Bool>("planning/go2_execution_frozen", 10);
     controller_bspline_pub_ = create_publisher<nav_msgs::msg::Path>(
         "planning/controller_bspline", rclcpp::QoS(10).reliable().transient_local());
+    local_path_pub_ = create_publisher<nav_msgs::msg::Path>(
+        "planning/local_path", rclcpp::QoS(10).reliable().transient_local());
     controller_target_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
         "planning/controller_target", 20);
     cmd_timer_ = create_wall_timer(std::chrono::milliseconds(10),
@@ -121,7 +125,16 @@ private:
     execution_frozen_pub_->publish(msg);
   }
 
-  void clearTrajectory(const std::string &reason)
+  static bool finiteOdometry(const nav_msgs::msg::Odometry &msg)
+  {
+    const auto &p = msg.pose.pose.position;
+    const auto &q = msg.pose.pose.orientation;
+    const double q_norm2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+           std::isfinite(q_norm2) && q_norm2 > 1.0e-12;
+  }
+
+  void clearTrajectory(const std::string &reason, bool safety_stop = false)
   {
     if (receive_traj_)
       RCLCPP_INFO(get_logger(), "Clearing active trajectory: %s", reason.c_str());
@@ -133,7 +146,8 @@ private:
     traj_duration_ = 0.0;
     exec_time_ = 0.0;
     closest_path_idx_ = 0;
-    publishExecutionFrozen(false);
+    safety_stop_active_ = safety_stop;
+    publishExecutionFrozen(safety_stop_active_);
     publishStop();
   }
 
@@ -141,7 +155,22 @@ private:
   {
     if (msg->pos_pts.empty() || msg->knots.empty() || msg->order <= 0)
     {
-      clearTrajectory("empty/invalid B-spline");
+      clearTrajectory("empty/invalid B-spline", safety_stop_active_);
+      return;
+    }
+    if (msg->header.frame_id.empty())
+    {
+      clearTrajectory("B-spline has an empty frame_id", true);
+      return;
+    }
+    const std::string required_frame =
+        expected_frame_id_.empty() ? odom_frame_id_ : expected_frame_id_;
+    if (!required_frame.empty() && msg->header.frame_id != required_frame)
+    {
+      RCLCPP_ERROR(
+          get_logger(), "Rejecting B-spline in frame '%s'; expected '%s'",
+          msg->header.frame_id.c_str(), required_frame.c_str());
+      clearTrajectory("B-spline frame mismatch", true);
       return;
     }
     Eigen::MatrixXd points(3, msg->pos_pts.size());
@@ -174,28 +203,46 @@ private:
 
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
   {
+    if (msg->header.frame_id.empty() || !finiteOdometry(*msg))
+    {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting body_pose with empty frame_id, non-finite pose, or invalid quaternion");
+      clearTrajectory("invalid body_pose", true);
+      have_odom_ = false;
+      return;
+    }
+    if (!expected_frame_id_.empty() && msg->header.frame_id != expected_frame_id_)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting body_pose in frame '%s'; expected '%s'",
+          msg->header.frame_id.c_str(), expected_frame_id_.c_str());
+      clearTrajectory("body_pose frame mismatch", true);
+      have_odom_ = false;
+      return;
+    }
+    if (!traj_frame_id_.empty() && msg->header.frame_id != traj_frame_id_)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Rejecting body_pose in frame '%s'; active B-spline uses '%s'",
+          msg->header.frame_id.c_str(), traj_frame_id_.c_str());
+      clearTrajectory("body_pose and B-spline frame mismatch", true);
+      have_odom_ = false;
+      return;
+    }
     if (odom_frame_id_ != msg->header.frame_id)
     {
       odom_frame_id_ = msg->header.frame_id;
       RCLCPP_INFO(get_logger(), "Controller odom frame is '%s', child_frame_id='%s'",
                   odom_frame_id_.c_str(), msg->child_frame_id.c_str());
     }
-    warnFrameMismatchIfNeeded();
     odom_pos_ << msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z;
     odom_yaw_ = tf2::getYaw(msg->pose.pose.orientation);
     have_odom_ = true;
-  }
-
-  void warnFrameMismatchIfNeeded()
-  {
-    if (traj_frame_id_.empty() || odom_frame_id_.empty() || traj_frame_id_ == odom_frame_id_)
-      return;
-    RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "B-spline frame '%s' differs from odom frame '%s'. Check real_grid_frame_id, "
-        "body_odom_world_frame_id, and goal_frame_id; controller still compares numeric "
-        "coordinates directly.",
-        traj_frame_id_.c_str(), odom_frame_id_.c_str());
+    last_odom_time_ = now();
+    safety_stop_active_ = false;
   }
 
   void publishControllerBspline()
@@ -218,6 +265,7 @@ private:
       path.poses.push_back(pose);
     }
     controller_bspline_pub_->publish(path);
+    local_path_pub_->publish(path);
   }
 
   void publishControllerTarget(const Eigen::Vector3d &pos_des,
@@ -446,13 +494,28 @@ private:
 
   void cmdCallback()
   {
+    const auto current_time = now();
+    if (have_odom_ && (current_time - last_odom_time_).seconds() > odom_timeout_)
+    {
+      RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "body_pose timed out (limit %.2fs); clearing trajectory and stopping",
+          odom_timeout_);
+      have_odom_ = false;
+      clearTrajectory("body_pose timeout", true);
+    }
+    if (safety_stop_active_)
+    {
+      publishExecutionFrozen(true);
+      publishStop();
+      return;
+    }
     if (!receive_traj_ || !have_odom_)
     {
       publishExecutionFrozen(false);
       publishStop();
       return;
     }
-    const auto current_time = now();
     double dt = (current_time - last_update_time_).seconds();
     if (dt < 0.0 || dt > 0.2) dt = 0.0;
     if (tracking_mode_ == "path_follow")
@@ -464,12 +527,14 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr execution_frozen_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr controller_bspline_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_path_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr controller_target_pub_;
   rclcpp::Subscription<scan_planner_msgs::msg::Bspline>::SharedPtr bspline_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr cmd_timer_;
   bool receive_traj_{false};
   bool have_odom_{false};
+  bool safety_stop_active_{false};
   std::vector<UniformBspline> traj_;
   double traj_duration_{0.0};
   std::int64_t traj_id_{0};
@@ -485,10 +550,13 @@ private:
   double odom_yaw_{0.0};
   double exec_time_{0.0};
   rclcpp::Time last_update_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_odom_time_{0, 0, RCL_ROS_TIME};
   double time_forward_, heading_error_threshold_, kp_pos_, kp_yaw_;
   double max_vx_, max_vy_, max_vyaw_, finish_dist_;
   double path_sample_dt_, lookahead_dist_, yaw_lookahead_dist_, min_path_speed_;
   double pure_pursuit_speed_{0.20};
+  double odom_timeout_{0.30};
+  std::string expected_frame_id_;
 };
 }  // namespace scan_planner
 

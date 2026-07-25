@@ -315,3 +315,20 @@ ros2 launch scan_planner run.launch.py \
 ```bash
 use_zsibot_udp_client:=true
 ```
+# 当前真机默认接口（lio_map）
+
+本文件后部包含早期 `lio_odom` 调试记录。当前两个 `run_real_planner*.sh` 已统一为：
+
+```text
+LIDAR_ODOM_TOPIC=/state_estimation_global
+BODY_ODOM_TOPIC=/body_state_estimation_global
+GRID_FRAME_ID=lio_map
+real_cloud_topic=/cloud_registered_global
+navi_mode=3
+use_global_path_publisher=true
+```
+
+完整链路和验收项见
+[`../../doc/SCAN_Planner_修改清单.md`](../../doc/SCAN_Planner_修改清单.md)。
+旧 bag 若只包含本地话题，仍可使用后文或 `tools/offline_validation` 的
+`lio_odom` 回放方式，但不要与当前真机全局链路混用。

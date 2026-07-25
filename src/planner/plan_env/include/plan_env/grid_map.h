@@ -86,7 +86,8 @@ struct MappingParameters {
   bool show_occ_time_;
 
   /* mapping sensor input */
-  string sensor_type_;
+  string sensor_type_, sensor_frame_id_;
+  double lidar_sync_tolerance_;
   bool cloud_is_world_;
   bool need_extrinsic_;
   Eigen::Matrix4d lidar_extrinsic_;
@@ -207,6 +208,9 @@ private:
   void depthPoseCallback(const sensor_msgs::msg::Image::ConstSharedPtr& img,
                          const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
   void sensorPoseCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+  void lidarCloudPoseCallback(
+      const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud,
+      const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
   void slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& img);
 
@@ -247,6 +251,10 @@ private:
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, nav_msgs::msg::Odometry>
       SyncPolicyImagePose;
   typedef shared_ptr<message_filters::Synchronizer<SyncPolicyImagePose>> SynchronizerImagePose;
+  typedef message_filters::sync_policies::ApproximateTime<
+      sensor_msgs::msg::PointCloud2, nav_msgs::msg::Odometry> SyncPolicyCloudPose;
+  typedef shared_ptr<message_filters::Synchronizer<SyncPolicyCloudPose>>
+      SynchronizerCloudPose;
 
   rclcpp::Node* node_{nullptr};
   std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -254,9 +262,10 @@ private:
   shared_ptr<message_filters::Subscriber<nav_msgs::msg::Odometry>> depth_pose_sub_;
   SynchronizerImagePose sync_image_pose_;
 
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr lidar_pose_sub_;
+  shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> lidar_cloud_sub_;
+  shared_ptr<message_filters::Subscriber<nav_msgs::msg::Odometry>> lidar_pose_sub_;
+  SynchronizerCloudPose sync_cloud_pose_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sliding_map_frame_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_inf_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr sliding_map_bbox_pub_;

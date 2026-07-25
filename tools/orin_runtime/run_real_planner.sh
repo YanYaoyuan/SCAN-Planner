@@ -7,9 +7,9 @@ source /opt/ros/humble/setup.bash
 source "${SCRIPT_DIR}/install/setup.bash"
 
 CMD_VEL_TOPIC="${CMD_VEL_TOPIC:-/scan_planner/cmd_vel}"
-LIDAR_ODOM_TOPIC="${LIDAR_ODOM_TOPIC:-/state_estimation}"
-BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation}"
-GRID_FRAME_ID="${GRID_FRAME_ID:-lio_odom}"
+LIDAR_ODOM_TOPIC="${LIDAR_ODOM_TOPIC:-/state_estimation_global}"
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation_global}"
+GRID_FRAME_ID="${GRID_FRAME_ID:-lio_map}"
 BODY_FRAME_ID="${BODY_FRAME_ID:-scan_base_link}"
 SENSOR_FRAME_ID="${SENSOR_FRAME_ID:-livox_frame}"
 # Calibrated scan_base_link -> livox_frame translation from
@@ -32,7 +32,8 @@ CONTROLLER_PURE_PURSUIT_SPEED="${CONTROLLER_PURE_PURSUIT_SPEED:-0.20}"
 
 exec ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
-  navi_mode:=1 \
+  navi_mode:=3 \
+  use_global_path_publisher:=true \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   controller_tracking_mode:="${CONTROLLER_TRACKING_MODE}" \
@@ -53,6 +54,7 @@ exec ros2 launch scan_planner run.launch.py \
   body_odom_sensor_frame_id:="${SENSOR_FRAME_ID}" \
   body_odom_world_frame_id:="${GRID_FRAME_ID}" \
   body_odom_publish_tf:=false \
+  body_odom_transform_twist:=true \
   body_to_sensor_x:="${BODY_TO_SENSOR_X}" \
   body_to_sensor_y:="${BODY_TO_SENSOR_Y}" \
   body_to_sensor_z:="${BODY_TO_SENSOR_Z}" \
@@ -61,7 +63,7 @@ exec ros2 launch scan_planner run.launch.py \
   body_to_sensor_yaw:="${BODY_TO_SENSOR_YAW}" \
   real_cmd_vel_topic:="${CMD_VEL_TOPIC}" \
   real_sensor_pose_topic:="${LIDAR_ODOM_TOPIC}" \
-  real_cloud_topic:=/cloud_registered \
+  real_cloud_topic:=/cloud_registered_global \
   real_grid_frame_id:="${GRID_FRAME_ID}" \
   real_cloud_is_world:=true \
   real_need_extrinsic:=false \
