@@ -40,6 +40,23 @@ scan_planner_node:
     # /planning/global_path 已表示机体中心高度，不再重复叠加 body_height。
     fsm.reference_path_height_offset: 0.0
 
+    # 模式 3 输入路径的最小有效点间距。更近的连续点会被去重，避免生成零时长轨迹段。
+    fsm.reference_path_min_point_spacing: 0.05
+
+    # 首尾 XY 距离不超过该值时视为闭环，但仍必须沿路径累计推进完整一圈才能完成。
+    fsm.reference_path_closed_tolerance: 0.30
+
+    # 清洗后路径总长度下限，防止误把单点或极短路径当成有效任务。
+    fsm.reference_path_min_length: 1.0
+
+    # 每次用里程计投影更新参考路径进度时，最多允许沿路径向前跳过的弧长。
+    # 该限制用于避免闭环终点或路径交叉点在空间上很近时跳到未来路段。
+    fsm.reference_progress_max_advance: 2.0
+
+    # 模式 3 完成必须同时满足：接近最终点，且参考路径剩余弧长足够小。
+    fsm.reference_finish_distance: 0.30
+    fsm.reference_finish_remaining_length: 0.30
+
     # =========================
     # Local occupancy map
     # =========================
@@ -200,8 +217,12 @@ scan_planner_node:
     # 动力学可行性权重，约束速度/加速度。调大: 更严格不超 max_vel/max_acc。
     optimization.lambda_feasibility: 0.1
 
-    # 贴合初始路径/参考路径权重。调大: 更像 A* / 初始路径; 调小: 优化器更自由地绕开障碍。
+    # 可行性细化阶段贴合已有 B-spline 的权重。
     optimization.lambda_fitness: 1.0
+
+    # 仅模式 3 回弹优化使用：让局部轨迹贴着预录路线，同时保留碰撞项绕障能力。
+    # 设为 0 可关闭；过大会限制绕障，过小则急弯处可能切弯。
+    optimization.lambda_reference: 2.0
 
     # 优化器安全距离，单位 m。控制点离膨胀障碍小于该距离时产生碰撞代价。
     # 注意它叠加在 grid_map.double_cylinder_radius 的膨胀占据层之外。

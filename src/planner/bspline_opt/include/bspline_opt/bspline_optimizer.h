@@ -64,6 +64,8 @@ namespace scan_planner
     void setBsplineInterval(const double &ts);
     void setCostFunction(const int &cost_function);
     void setTerminateCond(const int &max_num_id, const int &max_time_id);
+    void setReboundReference(const Eigen::MatrixXd &points);
+    void clearReboundReference();
 
     // optional inputs
     void setGuidePath(const vector<Eigen::Vector3d> &guide_pt);
@@ -113,6 +115,7 @@ namespace scan_planner
     double lambda2_, new_lambda2_; // distance weight
     double lambda3_;               // feasibility weight
     double lambda4_;               // curve fitting
+    double lambda5_;               // reference-route tracking during rebound
     int a;
     //
     double dist0_;             // safe distance
@@ -124,6 +127,8 @@ namespace scan_planner
     double min_cost_;               //
 
     ControlPoints cps_;
+    Eigen::MatrixXd rebound_reference_;
+    bool use_rebound_reference_{false};
 
     /* cost function */
     /* calculate each part of cost function with control points q as input */
@@ -137,6 +142,8 @@ namespace scan_planner
     void calcFeasibilityCost(const Eigen::MatrixXd &q, double &cost,
                              Eigen::MatrixXd &gradient);
     void calcDistanceCostRebound(const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost);
+    void calcReboundReferenceCost(const Eigen::MatrixXd &q, double &cost,
+                                  Eigen::MatrixXd &gradient);
     void calcFitnessCost(const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient);
     bool check_collision_and_rebound(void);
     double estimateSegmentYaw(const Eigen::Vector3d &from, const Eigen::Vector3d &to) const;

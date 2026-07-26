@@ -64,6 +64,12 @@ namespace scan_planner
     double self_double_cylinder_radius_, self_double_cylinder_offset_;
     double body_height_;
     double reference_path_height_offset_;
+    double reference_path_min_point_spacing_;
+    double reference_path_closed_tolerance_;
+    double reference_path_min_length_;
+    double reference_progress_max_advance_;
+    double reference_finish_distance_;
+    double reference_finish_remaining_length_;
     double odom_timeout_;
     std::string self_inflation_frame_id_;
     std::string expected_odom_frame_;
@@ -73,6 +79,8 @@ namespace scan_planner
     /* planning data */
     bool trigger_, have_target_, have_odom_, have_new_target_;
     bool preset_started_{false};
+    bool reference_path_active_{false};
+    bool reference_path_closed_{false};
     bool rviz_height_ready_;
     bool go2_execution_frozen_;
     bool enable_fail_safe_, need_hover_stop_;
@@ -91,7 +99,9 @@ namespace scan_planner
     Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
     Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
     std::vector<Eigen::Vector3d> active_waypoints_;
+    std::vector<Eigen::Vector3d> local_reference_seed_;
     int current_wp_;
+    double reference_path_total_length_{0.0};
 
     bool flag_escape_emergency_;
 
@@ -101,6 +111,7 @@ namespace scan_planner
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
+    nav_msgs::msg::Path::ConstSharedPtr pending_reference_path_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr go2_execution_frozen_sub_;
     rclcpp::Publisher<scan_planner_msgs::msg::Bspline>::SharedPtr bspline_pub_;
     rclcpp::Publisher<scan_planner_msgs::msg::DataDisp>::SharedPtr data_disp_pub_;
@@ -123,6 +134,12 @@ namespace scan_planner
     bool planGlobalTrajByWaypoints(const std::vector<Eigen::Vector3d> &waypoints);
     bool planNextWaypoint();
     bool isWaypointSequenceMode() const;
+    bool prepareReferenceWaypoints(const std::vector<Eigen::Vector3d> &input,
+                                   std::vector<Eigen::Vector3d> &output);
+    double referenceProgressSampleStep() const;
+    double updateReferencePathProgress();
+    double referencePathRemainingLength();
+    bool referencePathComplete();
     bool adjustGlobalTargetIfOccupied();
     bool transformPoseToGoalFrame(const geometry_msgs::msg::PoseStamped &input,
                                   geometry_msgs::msg::PoseStamped &output) const;

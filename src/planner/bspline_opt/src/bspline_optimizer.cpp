@@ -18,6 +18,7 @@ namespace scan_planner
     lambda2_ = get_double("optimization.lambda_collision", -1.0);
     lambda3_ = get_double("optimization.lambda_feasibility", -1.0);
     lambda4_ = get_double("optimization.lambda_fitness", -1.0);
+    lambda5_ = std::max(0.0, get_double("optimization.lambda_reference", 2.0));
     dist0_ = get_double("optimization.dist0", -1.0);
     max_vel_ = get_double("optimization.max_vel", -1.0);
     max_acc_ = get_double("optimization.max_acc", -1.0);
@@ -51,6 +52,23 @@ namespace scan_planner
   void BsplineOptimizer::setControlPoints(const Eigen::MatrixXd &points)
   {
     cps_.points = points;
+  }
+
+  void BsplineOptimizer::setReboundReference(const Eigen::MatrixXd &points)
+  {
+    if (points.rows() != 3 || points.cols() < 2 || !points.allFinite())
+    {
+      clearReboundReference();
+      return;
+    }
+    rebound_reference_ = points;
+    use_rebound_reference_ = true;
+  }
+
+  void BsplineOptimizer::clearReboundReference()
+  {
+    rebound_reference_.resize(0, 0);
+    use_rebound_reference_ = false;
   }
 
   void BsplineOptimizer::setBsplineInterval(const double &ts) { bspline_interval_ = ts; }
@@ -467,6 +485,25 @@ namespace scan_planner
       gradient.col(i - 1) += df_dx / 6;
       gradient.col(i) += 4 * df_dx / 6;
       gradient.col(i + 1) += df_dx / 6;
+    }
+  }
+
+  void BsplineOptimizer::calcReboundReferenceCost(
+      const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient)
+  {
+    cost = 0.0;
+    if (!use_rebound_reference_ ||
+        rebound_reference_.rows() != q.rows() ||
+        rebound_reference_.cols() != q.cols())
+      return;
+
+    const int end_idx = q.cols() - order_;
+    for (int i = order_; i < end_idx; ++i)
+    {
+      Eigen::Vector3d error = q.col(i) - rebound_reference_.col(i);
+      error(2) = 0.0;
+      cost += error.squaredNorm();
+      gradient.col(i) += 2.0 * error;
     }
   }
 
@@ -1151,21 +1188,24 @@ namespace scan_planner
     memcpy(cps_.points.data() + 3 * order_, x, n * sizeof(x[0]));
 
     /* ---------- evaluate cost and gradient ---------- */
-    double f_smoothness, f_distance, f_feasibility;
+    double f_smoothness, f_distance, f_feasibility, f_reference;
 
     Eigen::MatrixXd g_smoothness = Eigen::MatrixXd::Zero(3, cps_.size);
     Eigen::MatrixXd g_distance = Eigen::MatrixXd::Zero(3, cps_.size);
     Eigen::MatrixXd g_feasibility = Eigen::MatrixXd::Zero(3, cps_.size);
+    Eigen::MatrixXd g_reference = Eigen::MatrixXd::Zero(3, cps_.size);
 
     calcSmoothnessCost(cps_.points, f_smoothness, g_smoothness);
     calcDistanceCostRebound(cps_.points, f_distance, g_distance, iter_num_, f_smoothness);
     calcFeasibilityCost(cps_.points, f_feasibility, g_feasibility);
+    calcReboundReferenceCost(cps_.points, f_reference, g_reference);
 
-    f_combine = lambda1_ * f_smoothness + new_lambda2_ * f_distance + lambda3_ * f_feasibility;
+    f_combine = lambda1_ * f_smoothness + new_lambda2_ * f_distance +
+                lambda3_ * f_feasibility + lambda5_ * f_reference;
     //printf("origin %f %f %f %f\n", f_smoothness, f_distance, f_feasibility, f_combine);
 
     Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance +
-                              lambda3_ * g_feasibility;
+                              lambda3_ * g_feasibility + lambda5_ * g_reference;
     grad_3D.row(2).setZero();
     memcpy(grad, grad_3D.data() + 3 * order_, n * sizeof(grad[0]));
   }

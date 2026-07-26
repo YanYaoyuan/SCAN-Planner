@@ -81,7 +81,9 @@ namespace scan_planner
 
   bool SCANPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
-                                        Eigen::Vector3d local_target_vel, bool flag_polyInit, bool flag_randomPolyTraj)
+                                        Eigen::Vector3d local_target_vel, bool flag_polyInit,
+                                        bool flag_randomPolyTraj,
+                                        const std::vector<Eigen::Vector3d> &reference_seed)
   {
 
     static int count = 0;
@@ -106,13 +108,86 @@ namespace scan_planner
     vector<Eigen::Vector3d> point_set, start_end_derivatives;
     static bool flag_first_call = true, flag_force_polynomial = false;
     bool flag_regenerate = false;
+    bool used_reference_seed = false;
     do
     {
       point_set.clear();
       start_end_derivatives.clear();
       flag_regenerate = false;
+      used_reference_seed = false;
 
-      if (flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
+      if (!reference_seed.empty() && flag_polyInit && !flag_randomPolyTraj)
+      {
+        std::vector<Eigen::Vector3d> seed;
+        seed.reserve(reference_seed.size() + 2);
+        seed.push_back(start_pt);
+        for (const auto &point : reference_seed)
+        {
+          if (point.allFinite() && (point - seed.back()).norm() > 1.0e-4)
+            seed.push_back(point);
+        }
+        if ((local_target_pt - seed.back()).norm() > 1.0e-4)
+          seed.push_back(local_target_pt);
+        else
+          seed.back() = local_target_pt;
+
+        std::vector<double> cumulative_length(seed.size(), 0.0);
+        for (size_t i = 1; i < seed.size(); ++i)
+        {
+          cumulative_length[i] =
+              cumulative_length[i - 1] + (seed[i] - seed[i - 1]).norm();
+        }
+        const double total_length = cumulative_length.back();
+        if (seed.size() < 2 || total_length < 0.2)
+        {
+          RCLCPP_ERROR(node_->get_logger(), "Reference seed is too short for local replanning");
+          continuous_failures_count_++;
+          return false;
+        }
+
+        const double desired_spacing =
+            std::max(0.02, std::min(pp_.ctrl_pt_dist, total_length / 6.0));
+        const int segment_count =
+            std::max(6, static_cast<int>(std::ceil(total_length / desired_spacing)));
+        point_set.reserve(segment_count + 1);
+        size_t segment_index = 0;
+        for (int i = 0; i <= segment_count; ++i)
+        {
+          const double target_length =
+              total_length * static_cast<double>(i) / segment_count;
+          while (segment_index + 1 < cumulative_length.size() &&
+                 cumulative_length[segment_index + 1] < target_length)
+          {
+            ++segment_index;
+          }
+
+          if (segment_index + 1 >= seed.size())
+          {
+            point_set.push_back(seed.back());
+            continue;
+          }
+
+          const double segment_length =
+              cumulative_length[segment_index + 1] -
+              cumulative_length[segment_index];
+          const double ratio = segment_length > 1.0e-9
+              ? (target_length - cumulative_length[segment_index]) / segment_length
+              : 0.0;
+          point_set.push_back(
+              seed[segment_index] * (1.0 - ratio) +
+              seed[segment_index + 1] * ratio);
+        }
+        point_set.front() = start_pt;
+        point_set.back() = local_target_pt;
+        start_end_derivatives.push_back(start_vel);
+        start_end_derivatives.push_back(local_target_vel);
+        start_end_derivatives.push_back(start_acc);
+        start_end_derivatives.push_back(Eigen::Vector3d::Zero());
+        used_reference_seed = true;
+        flag_first_call = false;
+        flag_force_polynomial = false;
+      }
+      else if (flag_first_call || flag_polyInit || flag_force_polynomial /*|| ( start_pt - local_target_pt ).norm() < 1.0*/) // Initial path generated from a min-snap traj by order.
       {
         flag_first_call = false;
         flag_force_polynomial = false;
@@ -248,10 +323,16 @@ namespace scan_planner
       }
     } while (flag_regenerate);
 
-    applyLinearZReference(point_set, start_pt(2), local_target_pt(2));
+    if (!used_reference_seed)
+      applyLinearZReference(point_set, start_pt(2), local_target_pt(2));
 
     Eigen::MatrixXd ctrl_pts;
     UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
+
+    if (used_reference_seed)
+      bspline_optimizer_rebound_->setReboundReference(ctrl_pts);
+    else
+      bspline_optimizer_rebound_->clearReboundReference();
 
     vector<vector<Eigen::Vector3d>> a_star_paths;
     a_star_paths = bspline_optimizer_rebound_->initControlPoints(ctrl_pts, true);

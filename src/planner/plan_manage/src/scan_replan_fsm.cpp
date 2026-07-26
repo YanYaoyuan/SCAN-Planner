@@ -51,6 +51,23 @@ namespace scan_planner
     body_height_ = load_parameter<double>(node_, "grid_map.body_height", 0.4);
     reference_path_height_offset_ =
         load_parameter<double>(node_, "fsm.reference_path_height_offset", 0.0);
+    reference_path_min_point_spacing_ =
+        std::max(0.01, load_parameter<double>(node_, "fsm.reference_path_min_point_spacing", 0.05));
+    reference_path_closed_tolerance_ =
+        std::max(reference_path_min_point_spacing_,
+                 load_parameter<double>(node_, "fsm.reference_path_closed_tolerance", 0.30));
+    reference_path_min_length_ =
+        std::max(reference_path_closed_tolerance_,
+                 load_parameter<double>(node_, "fsm.reference_path_min_length", 1.0));
+    reference_progress_max_advance_ =
+        std::max(reference_path_min_point_spacing_,
+                 load_parameter<double>(node_, "fsm.reference_progress_max_advance", 2.0));
+    reference_finish_distance_ =
+        std::max(reference_path_min_point_spacing_,
+                 load_parameter<double>(node_, "fsm.reference_finish_distance", 0.30));
+    reference_finish_remaining_length_ =
+        std::max(reference_path_min_point_spacing_,
+                 load_parameter<double>(node_, "fsm.reference_finish_remaining_length", 0.30));
     odom_timeout_ = std::max(0.05, load_parameter<double>(node_, "fsm.odom_timeout", 0.3));
     self_inflation_frame_id_ = load_parameter<std::string>(node_, "grid_map.frame_id", "world");
     expected_odom_frame_ =
@@ -246,8 +263,9 @@ namespace scan_planner
       return false;
     }
 
-    if (!adjustGlobalTargetIfOccupied())
-      return false;
+    // Do not truncate a supplied reference route merely because its final
+    // point is currently occupied. Mode 3 handles occupancy on each local
+    // target and must preserve the caller's full route and completion point.
 
     constexpr double step_size_t = 0.1;
     int i_end = floor(planner_manager_->global_data_.global_duration_ / step_size_t);
@@ -317,6 +335,200 @@ namespace scan_planner
   bool SCANReplanFSM::isWaypointSequenceMode() const
   {
     return navi_mode_ == NAVI_MODE::PRESET_TARGET;
+  }
+
+  bool SCANReplanFSM::prepareReferenceWaypoints(
+      const std::vector<Eigen::Vector3d> &input,
+      std::vector<Eigen::Vector3d> &output)
+  {
+    output.clear();
+    reference_path_active_ = false;
+    reference_path_closed_ = false;
+    reference_path_total_length_ = 0.0;
+
+    if (input.empty())
+    {
+      RCLCPP_ERROR(node_->get_logger(), "Reference path contains no points");
+      return false;
+    }
+
+    reference_path_closed_ =
+        input.size() >= 2 &&
+        (input.front().head<2>() - input.back().head<2>()).norm() <=
+            reference_path_closed_tolerance_;
+
+    output.reserve(input.size());
+    for (const auto &point : input)
+    {
+      if (!point.allFinite())
+      {
+        RCLCPP_ERROR(node_->get_logger(), "Reference path contains a non-finite point");
+        output.clear();
+        return false;
+      }
+      if (output.empty() ||
+          (point - output.back()).norm() >= reference_path_min_point_spacing_)
+      {
+        output.push_back(point);
+      }
+    }
+
+    // planGlobalTrajWaypoints() prepends odom_pos_. Keeping an identical first
+    // path point would create a zero-duration polynomial segment.
+    while (output.size() > 1 &&
+           (output.front() - odom_pos_).norm() < reference_path_min_point_spacing_)
+    {
+      output.erase(output.begin());
+    }
+
+    if (output.empty())
+    {
+      RCLCPP_ERROR(node_->get_logger(), "Reference path is empty after duplicate removal");
+      return false;
+    }
+
+    Eigen::Vector3d previous = odom_pos_;
+    for (const auto &point : output)
+    {
+      reference_path_total_length_ += (point - previous).norm();
+      previous = point;
+    }
+
+    if (reference_path_total_length_ < reference_path_min_length_)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Reference path is too short after cleaning: %.3f m (minimum %.3f m)",
+          reference_path_total_length_,
+          reference_path_min_length_);
+      output.clear();
+      return false;
+    }
+
+    if (reference_path_closed_ && output.size() < 3)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Closed reference path has too few distinct points after cleaning");
+      output.clear();
+      return false;
+    }
+
+    RCLCPP_INFO(
+        node_->get_logger(),
+        "Prepared %s reference path: %zu points, %.2f m",
+        reference_path_closed_ ? "closed" : "open",
+        output.size(),
+        reference_path_total_length_);
+    return true;
+  }
+
+  double SCANReplanFSM::referenceProgressSampleStep() const
+  {
+    const double max_velocity =
+        std::max(0.05, planner_manager_ ? planner_manager_->pp_.max_vel_ : 0.3);
+    return std::clamp(
+        reference_path_min_point_spacing_ / max_velocity,
+        0.05,
+        0.5);
+  }
+
+  double SCANReplanFSM::updateReferencePathProgress()
+  {
+    if (!reference_path_active_ || !planner_manager_)
+      return 0.0;
+
+    auto &global_data = planner_manager_->global_data_;
+    const double duration = global_data.global_duration_;
+    if (!std::isfinite(duration) || duration <= 1.0e-6)
+      return 0.0;
+
+    const double start_t =
+        std::clamp(global_data.last_progress_time_, 0.0, duration);
+    const double sample_dt = referenceProgressSampleStep();
+    double best_t = start_t;
+    double best_distance =
+        (global_data.getPosition(start_t).head<2>() - odom_pos_.head<2>()).squaredNorm();
+    double travelled = 0.0;
+    Eigen::Vector3d previous = global_data.getPosition(start_t);
+
+    double t = start_t;
+    while (t < duration - 1.0e-6)
+    {
+      const double sample_t = std::min(t + sample_dt, duration);
+      const Eigen::Vector3d point = global_data.getPosition(sample_t);
+      travelled += (point - previous).norm();
+      previous = point;
+
+      if (travelled > reference_progress_max_advance_)
+        break;
+
+      const double distance =
+          (point.head<2>() - odom_pos_.head<2>()).squaredNorm();
+      if (distance < best_distance)
+      {
+        best_distance = distance;
+        best_t = sample_t;
+      }
+      t = sample_t;
+    }
+
+    global_data.last_progress_time_ =
+        std::max(global_data.last_progress_time_, best_t);
+    return global_data.last_progress_time_;
+  }
+
+  double SCANReplanFSM::referencePathRemainingLength()
+  {
+    if (!reference_path_active_ || !planner_manager_)
+      return 0.0;
+
+    auto &global_data = planner_manager_->global_data_;
+    const double duration = global_data.global_duration_;
+    if (!std::isfinite(duration) || duration <= 1.0e-6)
+      return std::max(reference_path_total_length_,
+                      reference_finish_remaining_length_ + 1.0);
+    const double start_t =
+        std::clamp(global_data.last_progress_time_, 0.0, duration);
+    const double sample_dt = referenceProgressSampleStep();
+    double remaining = 0.0;
+    Eigen::Vector3d previous = global_data.getPosition(start_t);
+
+    double t = start_t;
+    while (t < duration - 1.0e-6)
+    {
+      const double sample_t = std::min(t + sample_dt, duration);
+      const Eigen::Vector3d point = global_data.getPosition(sample_t);
+      remaining += (point - previous).norm();
+      previous = point;
+      t = sample_t;
+    }
+    return remaining;
+  }
+
+  bool SCANReplanFSM::referencePathComplete()
+  {
+    if (!reference_path_active_)
+      return false;
+
+    updateReferencePathProgress();
+    const double remaining = referencePathRemainingLength();
+    const double distance_to_end =
+        (end_pt_.head<2>() - odom_pos_.head<2>()).norm();
+    const bool complete =
+        remaining <= reference_finish_remaining_length_ &&
+        distance_to_end <= reference_finish_distance_;
+
+    if (complete)
+    {
+      RCLCPP_INFO(
+          node_->get_logger(),
+          "%s reference path completed: remaining %.3f m, end distance %.3f m",
+          reference_path_closed_ ? "Closed" : "Open",
+          remaining,
+          distance_to_end);
+    }
+    return complete;
   }
 
   bool SCANReplanFSM::adjustGlobalTargetIfOccupied()
@@ -405,10 +617,19 @@ namespace scan_planner
       return;
     }
 
+    if (!have_odom_)
+    {
+      RCLCPP_WARN(
+          node_->get_logger(),
+          "Received reference path before a valid body_pose; caching it");
+      pending_reference_path_ = msg;
+      return;
+    }
+
     trigger_ = true;
 
-    std::vector<Eigen::Vector3d> waypoints;
-    waypoints.reserve(msg->poses.size());
+    std::vector<Eigen::Vector3d> raw_waypoints;
+    raw_waypoints.reserve(msg->poses.size());
 
     for (const auto& pose_stamped : msg->poses)
     {
@@ -423,12 +644,22 @@ namespace scan_planner
       wp(0) = transformed_pose.pose.position.x;
       wp(1) = transformed_pose.pose.position.y;
       wp(2) = transformed_pose.pose.position.z + reference_path_height_offset_;
-      waypoints.push_back(wp);
+      raw_waypoints.push_back(wp);
     }
+
+    std::vector<Eigen::Vector3d> waypoints;
+    if (!prepareReferenceWaypoints(raw_waypoints, waypoints))
+    {
+      have_target_ = false;
+      return;
+    }
+
     bool success = planGlobalTrajByWaypoints(waypoints);
 
     if (success)
     {
+      reference_path_active_ = true;
+      planner_manager_->global_data_.last_progress_time_ = 0.0;
       /*** FSM ***/
       if (exec_state_ == WAIT_TARGET)
       {
@@ -439,10 +670,14 @@ namespace scan_planner
         changeFSMExecState(REPLAN_TRAJ, "TRIG");
       }
 
-      RCLCPP_INFO(node_->get_logger(), "Reference path accepted");
+      RCLCPP_INFO(
+          node_->get_logger(),
+          "%s reference path accepted; completion requires forward progress through the full route",
+          reference_path_closed_ ? "Closed" : "Open");
     }
     else
     {
+      reference_path_active_ = false;
       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory from reference path");
     }
   }
@@ -506,6 +741,12 @@ namespace scan_planner
     last_odom_receive_time_ = node_->now();
     odom_timeout_active_ = false;
     publishSelfInflationMarker();
+    if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && pending_reference_path_)
+    {
+      auto pending_path = pending_reference_path_;
+      pending_reference_path_.reset();
+      pathCallback(pending_path);
+    }
     if (navi_mode_ == NAVI_MODE::PRESET_TARGET && !preset_started_)
     {
       preset_started_ = true;
@@ -640,6 +881,7 @@ namespace scan_planner
       have_target_ = false;
       have_new_target_ = false;
       active_waypoints_.clear();
+      reference_path_active_ = false;
       preset_started_ = false;
       exec_state_ = FSM_EXEC_STATE::INIT;
       return;
@@ -759,6 +1001,23 @@ namespace scan_planner
       /* && (end_pt_ - pos).norm() < 0.5 */
       if (t_cur > info->duration_ - 1e-2)
       {
+        if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && reference_path_active_)
+        {
+          if (referencePathComplete())
+          {
+            reference_path_active_ = false;
+            have_target_ = false;
+            changeFSMExecState(WAIT_TARGET, "REFERENCE_DONE");
+          }
+          else
+          {
+            // A local B-spline reaching its end is not the same thing as
+            // completing the full reference route.
+            changeFSMExecState(GEN_NEW_TRAJ, "REFERENCE_CONTINUE");
+          }
+          return;
+        }
+
         if (isWaypointSequenceMode() && current_wp_ + 1 < (int)active_waypoints_.size())
         {
           current_wp_++;
@@ -818,6 +1077,7 @@ namespace scan_planner
           need_hover_stop_ = false;
           have_target_ = false;
           trigger_ = false;
+          reference_path_active_ = false;
           changeFSMExecState(WAIT_TARGET, "EMERGENCY_EXIT");
         }
       }
@@ -877,27 +1137,35 @@ namespace scan_planner
     start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
 
     const Eigen::Vector2d to_goal = end_pt_.head<2>() - odom_pos_.head<2>();
-    if (to_goal.norm() > 1e-3 && start_vel_.head<2>().dot(to_goal) < 0.0)
+    if (navi_mode_ != NAVI_MODE::REFERENCE_PATH &&
+        to_goal.norm() > 1e-3 &&
+        start_vel_.head<2>().dot(to_goal) < 0.0)
     {
       start_vel_.setZero();
       start_acc_.setZero();
     }
 
-    if (!planner_manager_->planGlobalTraj(
-            start_pt_,
-            start_vel_,
-            start_acc_,
-            end_pt_,
-            Eigen::Vector3d::Zero(),
-            Eigen::Vector3d::Zero()))
+    // A reference path is the global route contract. Replacing it with a new
+    // current-position-to-end polynomial makes mode 3 cut directly to the
+    // final point after its first local replan.
+    if (navi_mode_ != NAVI_MODE::REFERENCE_PATH || !reference_path_active_)
     {
-      RCLCPP_ERROR(node_->get_logger(),
-                   "[navi_mode=%d] Unable to refresh global trajectory from odom to current target", navi_mode_);
-      return false;
-    }
+      if (!planner_manager_->planGlobalTraj(
+              start_pt_,
+              start_vel_,
+              start_acc_,
+              end_pt_,
+              Eigen::Vector3d::Zero(),
+              Eigen::Vector3d::Zero()))
+      {
+        RCLCPP_ERROR(node_->get_logger(),
+                     "[navi_mode=%d] Unable to refresh global trajectory from odom to current target", navi_mode_);
+        return false;
+      }
 
-    if (!adjustGlobalTargetIfOccupied())
-      return false;
+      if (!adjustGlobalTargetIfOccupied())
+        return false;
+    }
 
     bool success = callReboundReplan(true, false);
     if (!success)
@@ -929,7 +1197,9 @@ namespace scan_planner
     start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
 
     const Eigen::Vector2d to_goal = end_pt_.head<2>() - odom_pos_.head<2>();
-    if (to_goal.norm() > 1e-3 && start_vel_.head<2>().dot(to_goal) < 0.0)
+    if (navi_mode_ != NAVI_MODE::REFERENCE_PATH &&
+        to_goal.norm() > 1e-3 &&
+        start_vel_.head<2>().dot(to_goal) < 0.0)
     {
       start_vel_.setZero();
       start_acc_.setZero();
@@ -989,7 +1259,15 @@ namespace scan_planner
     getLocalTarget();
 
     bool plan_success =
-        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj);
+        planner_manager_->reboundReplan(
+            start_pt_,
+            start_vel_,
+            start_acc_,
+            local_target_pt_,
+            local_target_vel_,
+            (have_new_target_ || flag_use_poly_init),
+            flag_randomPolyTraj,
+            local_reference_seed_);
     have_new_target_ = false;
 
     cout << "final_plan_success=" << plan_success << endl;
@@ -1073,43 +1351,110 @@ namespace scan_planner
 
   void SCANReplanFSM::getLocalTarget()
   {
-    double t;
-
-    double t_step = planning_horizon_ / 20 / planner_manager_->pp_.max_vel_;
-    double dist_min = 9999, dist_min_t = 0.0;
+    local_reference_seed_.clear();
+    const double t_step = std::max(
+        0.05,
+        planning_horizon_ / 20.0 /
+            std::max(0.05, planner_manager_->pp_.max_vel_));
+    double dist_min_t = 0.0;
     double target_t = planner_manager_->global_data_.global_duration_;
-    for (t = planner_manager_->global_data_.last_progress_time_; t < planner_manager_->global_data_.global_duration_; t += t_step)
+    if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && reference_path_active_)
     {
-      Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t);
-      double dist = (pos_t - start_pt_).norm();
+      const double progress_t = updateReferencePathProgress();
+      dist_min_t = progress_t;
+      double accumulated_length = 0.0;
+      Eigen::Vector3d previous =
+          planner_manager_->global_data_.getPosition(progress_t);
+      bool target_selected = false;
+      local_reference_seed_.push_back(start_pt_);
+      if ((previous - local_reference_seed_.back()).norm() >=
+          reference_path_min_point_spacing_)
+      {
+        local_reference_seed_.push_back(previous);
+      }
 
-      if (t < planner_manager_->global_data_.last_progress_time_ + 1e-5 && dist > planning_horizon_)
+      for (double t = progress_t + t_step;
+           t <= planner_manager_->global_data_.global_duration_ + 1.0e-6;
+           t += t_step)
       {
-        RCLCPP_ERROR(node_->get_logger(),
-                     "Local target progress mismatch: distance=%.3f horizon=%.3f progress_time=%.3f",
-                     dist, planning_horizon_, planner_manager_->global_data_.last_progress_time_);
-        local_target_pt_ = pos_t;
-        target_t = t;
-        planner_manager_->global_data_.last_progress_time_ = t;
-        break;
+        const double sample_t =
+            std::min(t, planner_manager_->global_data_.global_duration_);
+        const Eigen::Vector3d point =
+            planner_manager_->global_data_.getPosition(sample_t);
+        accumulated_length += (point - previous).norm();
+        previous = point;
+        if ((point - local_reference_seed_.back()).norm() >=
+            reference_path_min_point_spacing_)
+        {
+          local_reference_seed_.push_back(point);
+        }
+
+        if (accumulated_length >= planning_horizon_)
+        {
+          local_target_pt_ = point;
+          target_t = sample_t;
+          target_selected = true;
+          break;
+        }
+        if (sample_t >= planner_manager_->global_data_.global_duration_)
+          break;
       }
-      if (dist < dist_min)
+
+      if (!target_selected)
       {
-        dist_min = dist;
-        dist_min_t = t;
+        local_target_pt_ = end_pt_;
+        target_t = planner_manager_->global_data_.global_duration_;
       }
-      if (dist >= planning_horizon_)
+      if ((local_target_pt_ - local_reference_seed_.back()).norm() >=
+          reference_path_min_point_spacing_)
       {
-        local_target_pt_ = pos_t;
-        target_t = t;
-        planner_manager_->global_data_.last_progress_time_ = dist_min_t;
-        break;
+        local_reference_seed_.push_back(local_target_pt_);
+      }
+      else
+      {
+        local_reference_seed_.back() = local_target_pt_;
       }
     }
-    if (t > planner_manager_->global_data_.global_duration_) // Last global point
+    else
     {
-      local_target_pt_ = end_pt_;
-      target_t = planner_manager_->global_data_.global_duration_;
+      double t;
+      double dist_min = 9999.0;
+      for (t = planner_manager_->global_data_.last_progress_time_;
+           t < planner_manager_->global_data_.global_duration_;
+           t += t_step)
+      {
+        Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t);
+        double dist = (pos_t - start_pt_).norm();
+
+        if (t < planner_manager_->global_data_.last_progress_time_ + 1e-5 &&
+            dist > planning_horizon_)
+        {
+          RCLCPP_ERROR(node_->get_logger(),
+                       "Local target progress mismatch: distance=%.3f horizon=%.3f progress_time=%.3f",
+                       dist, planning_horizon_, planner_manager_->global_data_.last_progress_time_);
+          local_target_pt_ = pos_t;
+          target_t = t;
+          planner_manager_->global_data_.last_progress_time_ = t;
+          break;
+        }
+        if (dist < dist_min)
+        {
+          dist_min = dist;
+          dist_min_t = t;
+        }
+        if (dist >= planning_horizon_)
+        {
+          local_target_pt_ = pos_t;
+          target_t = t;
+          planner_manager_->global_data_.last_progress_time_ = dist_min_t;
+          break;
+        }
+      }
+      if (t > planner_manager_->global_data_.global_duration_) // Last global point
+      {
+        local_target_pt_ = end_pt_;
+        target_t = planner_manager_->global_data_.global_duration_;
+      }
     }
 
     auto targetOccupancy = [&](const Eigen::Vector3d &pt) {
@@ -1160,6 +1505,49 @@ namespace scan_planner
       {
         RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
                              "Local target is in collision and no nearby free target was found");
+      }
+    }
+
+    if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && reference_path_active_)
+    {
+      // The occupancy check above may move the local target forward or
+      // backward along the global trajectory. Rebuild the seed to that exact
+      // target so it never contains an overshoot followed by a backward leg.
+      local_reference_seed_.clear();
+      local_reference_seed_.push_back(start_pt_);
+      const double seed_start_t =
+          std::clamp(dist_min_t, 0.0, planner_manager_->global_data_.global_duration_);
+      const double seed_end_t =
+          std::clamp(target_t, seed_start_t, planner_manager_->global_data_.global_duration_);
+      const Eigen::Vector3d seed_start =
+          planner_manager_->global_data_.getPosition(seed_start_t);
+      if ((seed_start - local_reference_seed_.back()).norm() >=
+          reference_path_min_point_spacing_)
+      {
+        local_reference_seed_.push_back(seed_start);
+      }
+
+      for (double t = seed_start_t + t_step;
+           t < seed_end_t - 1.0e-6;
+           t += t_step)
+      {
+        const Eigen::Vector3d point =
+            planner_manager_->global_data_.getPosition(t);
+        if ((point - local_reference_seed_.back()).norm() >=
+            reference_path_min_point_spacing_)
+        {
+          local_reference_seed_.push_back(point);
+        }
+      }
+
+      if ((local_target_pt_ - local_reference_seed_.back()).norm() >=
+          reference_path_min_point_spacing_)
+      {
+        local_reference_seed_.push_back(local_target_pt_);
+      }
+      else
+      {
+        local_reference_seed_.back() = local_target_pt_;
       }
     }
 
