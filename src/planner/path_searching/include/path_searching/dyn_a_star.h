@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file dyn_a_star.h @brief Dynamic A* local-grid search API. */
+
 #ifndef _DYN_A_STAR_H_
 #define _DYN_A_STAR_H_
 
@@ -11,6 +15,7 @@ constexpr double inf = 1 >> 20;
 struct GridNode;
 typedef GridNode *GridNodePtr;
 
+/** @brief Status returned by an A* search request. */
 enum ASTAR_RET
 {
 	SUCCESS,
@@ -18,6 +23,7 @@ enum ASTAR_RET
 	SEARCH_ERR
 };
 
+/** @brief One reusable node in the A* voxel pool. */
 struct GridNode
 {
 	enum enum_state
@@ -38,36 +44,49 @@ struct GridNode
 	GridNodePtr cameFrom{NULL};
 };
 
+/** @brief Orders A* nodes by increasing estimated total cost. */
 class NodeComparator
 {
 public:
+	/** @brief Compares two nodes for the priority queue. @param node1 First node. @param node2 Second node. @return True when @p node1 has lower queue priority. */
 	bool operator()(GridNodePtr node1, GridNodePtr node2)
 	{
 		return node1->fScore > node2->fScore;
 	}
 };
 
+/** @brief Performs bounded three-dimensional A* search in the local occupancy map. */
 class AStar
 {
 private:
 	GridMap::Ptr grid_map_;
 
+	/** @brief Converts coordinates into unchecked pool indices. @param x X coordinate. @param y Y coordinate. @param z Z coordinate. @param[out] id_x X index. @param[out] id_y Y index. @param[out] id_z Z index. */
 	inline void coord2gridIndexFast(const double x, const double y, const double z, int &id_x, int &id_y, int &id_z);
 
+	/** @brief Computes diagonal-grid heuristic. @param node1 Source node. @param node2 Goal node. @return Estimated cost. */
 	double getDiagHeu(GridNodePtr node1, GridNodePtr node2);
+	/** @brief Computes Manhattan heuristic. @param node1 Source node. @param node2 Goal node. @return Estimated cost. */
 	double getManhHeu(GridNodePtr node1, GridNodePtr node2);
+	/** @brief Computes Euclidean heuristic. @param node1 Source node. @param node2 Goal node. @return Estimated cost. */
 	double getEuclHeu(GridNodePtr node1, GridNodePtr node2);
+	/** @brief Computes the configured tie-broken heuristic. @param node1 Source node. @param node2 Goal node. @return Estimated cost. */
 	inline double getHeu(GridNodePtr node1, GridNodePtr node2);
 
+	/** @brief Converts and clamps endpoints to the search pool. @param start_pt Start coordinate. @param end_pt Goal coordinate. @param[out] start_idx Start index. @param[out] end_idx Goal index. @return True on success. */
 	bool ConvertToIndexAndAdjustStartEndPoints(const Eigen::Vector3d start_pt, const Eigen::Vector3d end_pt, Eigen::Vector3i &start_idx, Eigen::Vector3i &end_idx);
 
+	/** @brief Converts a pool index to map coordinates. @param index Pool index. @return Voxel-center coordinate. */
 	inline Eigen::Vector3d Index2Coord(const Eigen::Vector3i &index) const;
+	/** @brief Converts a coordinate to a validated pool index. @param pt Coordinate. @param[out] idx Pool index. @return False when outside the pool. */
 	inline bool Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const;
 
 	//bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
 
+	/** @brief Queries inflated occupancy. @param pos Coordinate. @param yaw Robot heading in radians. @return Occupancy state. */
 	inline int checkOccupancy(const Eigen::Vector3d &pos, const double yaw) { return grid_map_->getInflateOccupancy(pos, yaw); }
 
+	/** @brief Reconstructs a path from the goal node. @param current Goal node. @return Ordered node path. */
 	std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 
 	double step_size_, inv_step_size_;
@@ -85,13 +104,18 @@ private:
 public:
 	typedef std::shared_ptr<AStar> Ptr;
 
+	/** @brief Constructs an uninitialized search object. */
 	AStar(){};
+	/** @brief Releases the allocated node pool. */
 	~AStar();
 
+	/** @brief Allocates the node pool and binds an occupancy map. @param occ_map Occupancy map. @param pool_size Number of nodes along each axis. */
 	void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
 
+	/** @brief Searches between two coordinates. @param step_size Search-grid resolution. @param start_pt Start coordinate. @param end_pt Goal coordinate. @return Search status. */
 	ASTAR_RET AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);
 
+	/** @brief Returns the last successful path. @return Coordinates ordered from start to goal. */
 	std::vector<Eigen::Vector3d> getPath();
 };
 

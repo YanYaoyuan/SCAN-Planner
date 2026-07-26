@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file closed_loop_controller.cpp @brief Closed-loop B-spline tracking controller. */
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -21,9 +25,11 @@
 
 namespace scan_planner
 {
+/** @brief Tracks local B-splines using odometry feedback and publishes body velocity commands. */
 class ClosedLoopController : public rclcpp::Node
 {
 public:
+  /** @brief Loads controller parameters and creates ROS interfaces. */
   ClosedLoopController() : Node("closed_loop_controller")
   {
     time_forward_ = declare_parameter<double>("time_forward", 0.8);
@@ -80,6 +86,7 @@ public:
 private:
   static constexpr double kMaxVYawLimit = 1.0;
 
+  /** @brief Wraps an angle to [-pi, pi]. @param angle Input angle. @return Wrapped angle. */
   static double normalizeAngle(double angle)
   {
     while (angle > M_PI) angle -= 2.0 * M_PI;
@@ -87,12 +94,14 @@ private:
     return angle;
   }
 
+  /** @brief Limits a vector magnitude. @param value Input vector. @param max_norm Maximum norm. @return Limited vector. */
   static Eigen::Vector2d clampNorm(const Eigen::Vector2d &value, double max_norm)
   {
     const double norm = value.norm();
     return (norm <= max_norm || norm < 1e-6) ? value : value / norm * max_norm;
   }
 
+  /** @brief Safely normalizes a vector. @param value Input vector. @return Unit vector or zero. */
   static Eigen::Vector2d normalizedOrZero(const Eigen::Vector2d &value)
   {
     const double norm = value.norm();
@@ -101,6 +110,7 @@ private:
     return value / norm;
   }
 
+  /** @brief Estimates desired heading from the trajectory tangent. @param t_cur Current trajectory time. @param pos_des Desired position. @return Desired yaw. */
   double estimateDesiredYaw(double t_cur, const Eigen::Vector3d &pos_des) const
   {
     const double t_look = std::min(traj_duration_, t_cur + time_forward_);
@@ -111,6 +121,7 @@ private:
         ? odom_yaw_ : std::atan2(direction.y(), direction.x());
   }
 
+  /** @brief Publishes a zero-translation command. @param yaw_rate Optional yaw rate. */
   void publishStop(double yaw_rate = 0.0)
   {
     geometry_msgs::msg::Twist cmd;
@@ -118,6 +129,7 @@ private:
     cmd_vel_pub_->publish(cmd);
   }
 
+  /** @brief Reports whether trajectory time is frozen. @param frozen Freeze state. */
   void publishExecutionFrozen(bool frozen)
   {
     std_msgs::msg::Bool msg;
@@ -125,6 +137,7 @@ private:
     execution_frozen_pub_->publish(msg);
   }
 
+  /** @brief Validates all odometry numeric fields. @param msg Odometry. @return True when finite. */
   static bool finiteOdometry(const nav_msgs::msg::Odometry &msg)
   {
     const auto &p = msg.pose.pose.position;
@@ -134,6 +147,7 @@ private:
            std::isfinite(q_norm2) && q_norm2 > 1.0e-12;
   }
 
+  /** @brief Clears active trajectory and stops motion. @param reason Diagnostic reason. @param safety_stop Whether to latch safety-stop behavior. */
   void clearTrajectory(const std::string &reason, bool safety_stop = false)
   {
     if (receive_traj_)
@@ -151,6 +165,7 @@ private:
     publishStop();
   }
 
+  /** @brief Receives a new local B-spline. @param msg B-spline message. */
   void bsplineCallback(const scan_planner_msgs::msg::Bspline::ConstSharedPtr msg)
   {
     if (msg->pos_pts.empty() || msg->knots.empty() || msg->order <= 0)
@@ -201,6 +216,7 @@ private:
     publishControllerBspline();
   }
 
+  /** @brief Receives body odometry. @param msg Odometry message. */
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
   {
     if (msg->header.frame_id.empty() || !finiteOdometry(*msg))
@@ -245,6 +261,7 @@ private:
     safety_stop_active_ = false;
   }
 
+  /** @brief Publishes the active B-spline as a sampled path. */
   void publishControllerBspline()
   {
     if (sampled_path_.empty() || traj_frame_id_.empty())
@@ -268,6 +285,7 @@ private:
     local_path_pub_->publish(path);
   }
 
+  /** @brief Publishes the current tracking target marker. @param pos_des Desired position. @param vel_des Desired velocity. */
   void publishControllerTarget(const Eigen::Vector3d &pos_des,
                                const rclcpp::Time &stamp)
   {
@@ -284,6 +302,7 @@ private:
     controller_target_pub_->publish(target);
   }
 
+  /** @brief Samples the active B-spline for path-following control. */
   void sampleControllerPath()
   {
     sampled_path_.clear();
@@ -315,6 +334,7 @@ private:
     }
   }
 
+  /** @brief Finds the nearest forward path sample. @return Closest sample index. */
   size_t findClosestPathIndex()
   {
     if (sampled_path_.empty())
@@ -337,6 +357,7 @@ private:
     return closest_path_idx_;
   }
 
+  /** @brief Advances along sampled path by arc length. @param start_idx Starting sample index. @param distance Desired forward distance. @return Target sample index. */
   size_t indexAtArcDistance(size_t start_idx, double distance) const
   {
     if (sampled_arc_lengths_.empty())
@@ -351,6 +372,7 @@ private:
     return sampled_arc_lengths_.size() - 1;
   }
 
+  /** @brief Returns reference speed at a sampled path index. @param idx Sample index. @return Speed. */
   double pathSpeedAt(size_t idx) const
   {
     if (traj_.size() < 2 || sampled_times_.empty())
@@ -360,6 +382,7 @@ private:
     return std::min(max_vx_, std::max(min_path_speed_, speed));
   }
 
+  /** @brief Converts world velocity to body coordinates and publishes it. @param vel_world World-frame planar velocity. @param yaw_rate Angular velocity. */
   void publishBodyCommand(const Eigen::Vector2d &vel_world,
                           double yaw_command,
                           geometry_msgs::msg::Twist &command) const
@@ -371,6 +394,7 @@ private:
     command.angular.z = yaw_command;
   }
 
+  /** @brief Computes and publishes a pure-pursuit command. @param to_target_world Vector to lookahead target. @param tangent_world Reference tangent. @param speed Desired speed. */
   void publishPurePursuitCommand(const Eigen::Vector2d &to_target_world,
                                  bool target_is_end,
                                  double dist_to_end,
@@ -402,6 +426,7 @@ private:
     command.angular.z = std::clamp(yaw_rate, -max_vyaw_, max_vyaw_);
   }
 
+  /** @brief Executes one spatial path-following update. @param current_time Current ROS time. @param dt Controller period. */
   void trackPathFollowing(const rclcpp::Time &current_time, double dt)
   {
     if (sampled_path_.empty())
@@ -459,6 +484,7 @@ private:
     cmd_vel_pub_->publish(command);
   }
 
+  /** @brief Executes one time-parameterized tracking update. @param current_time Current ROS time. @param dt Controller period. */
   void trackTimeFollowing(const rclcpp::Time &current_time, double dt)
   {
     const double t_eval = std::min(exec_time_, traj_duration_);
@@ -492,6 +518,7 @@ private:
     cmd_vel_pub_->publish(command);
   }
 
+  /** @brief Periodic controller update and command publication callback. */
   void cmdCallback()
   {
     const auto current_time = now();
@@ -560,6 +587,7 @@ private:
 };
 }  // namespace scan_planner
 
+/** @brief Runs the closed-loop controller. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

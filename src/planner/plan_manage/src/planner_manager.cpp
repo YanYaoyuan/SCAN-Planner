@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file planner_manager.cpp @brief Implements global and local trajectory planning. */
+
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
 #include <chrono>
@@ -7,6 +11,12 @@ namespace scan_planner
 {
   namespace
   {
+    /**
+     * @brief Replaces sample heights with linear interpolation along planar arc length.
+     * @param[in,out] points Ordered trajectory samples.
+     * @param start_z Height assigned at the first sample.
+     * @param target_z Height assigned at the final sample.
+     */
     void applyLinearZReference(std::vector<Eigen::Vector3d> &points, const double start_z, const double target_z)
     {
       if (points.empty())

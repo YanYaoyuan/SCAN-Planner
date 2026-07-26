@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file zsibot_cmd_udp_client.cpp @brief UDP client for forwarding robot commands. */
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -36,9 +40,11 @@ double applyDeadband(double value, double deadband)
 
 namespace zsibot_cmd_bridge
 {
+/** @brief Sends guarded ROS velocity commands to the on-robot SDK proxy over UDP. */
 class ZsiBotCmdUdpClient : public rclcpp::Node
 {
 public:
+  /** @brief Loads UDP and safety parameters, opens the socket, and creates ROS interfaces. */
   ZsiBotCmdUdpClient() : Node("zsibot_cmd_udp_client")
   {
     proxy_ip_ = declare_parameter<std::string>("proxy_ip", "192.168.234.1");
@@ -83,6 +89,7 @@ public:
                 proxy_ip_.c_str(), proxy_port_);
   }
 
+  /** @brief Sends a final stop packet and closes the UDP socket. */
   ~ZsiBotCmdUdpClient() override
   {
     try
@@ -97,6 +104,7 @@ public:
   }
 
 private:
+  /** @brief Stores the latest planner command. @param msg Twist command. */
   void cmdCallback(const geometry_msgs::msg::Twist::ConstSharedPtr msg)
   {
     vx_ = applyDeadband(clampFinite(msg->linear.x, max_vx_), deadband_vx_);
@@ -106,6 +114,7 @@ private:
     have_cmd_ = true;
   }
 
+  /** @brief Applies watchdog behavior and sends one UDP packet. */
   void timerCallback()
   {
     const bool timed_out = !have_cmd_ || (now() - last_cmd_time_).seconds() > cmd_timeout_;
@@ -125,6 +134,7 @@ private:
     maybeLogStatus(false);
   }
 
+  /** @brief Serializes and transmits one command. @param vx Forward velocity. @param vy Lateral velocity. @param yaw_rate Yaw rate. */
   void sendPacket(double vx, double vy, double yaw_rate)
   {
     ++seq_;
@@ -144,6 +154,7 @@ private:
     }
   }
 
+  /** @brief Emits throttled UDP-client diagnostics. @param timed_out Whether the command watchdog expired. */
   void maybeLogStatus(bool timed_out)
   {
     if (status_log_period_ <= 0.0)
@@ -185,6 +196,7 @@ private:
 };
 }  // namespace zsibot_cmd_bridge
 
+/** @brief Runs the ZsiBot UDP command client. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);

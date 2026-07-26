@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file plan_container.hpp @brief Planner parameters and trajectory-data containers. */
+
 #ifndef _PLAN_CONTAINER_H_
 #define _PLAN_CONTAINER_H_
 
@@ -13,6 +17,7 @@ using std::vector;
 namespace scan_planner
 {
 
+  /** @brief Stores the global route plus the latest local B-spline replacement segment. */
   class GlobalTrajData
   {
   private:
@@ -27,12 +32,16 @@ namespace scan_planner
     double last_time_inc_;
     double last_progress_time_;
 
+    /** @brief Constructs an empty trajectory container. */
     GlobalTrajData(/* args */) {}
 
+    /** @brief Destroys the trajectory container. */
     ~GlobalTrajData() {}
 
+    /** @brief Checks whether the local segment reaches global trajectory end. @return True when end times differ by less than 0.1 s. */
     bool localTrajReachTarget() { return fabs(local_end_time_ - global_duration_) < 0.1; }
 
+    /** @brief Installs a new global polynomial trajectory. @param traj Global trajectory. @param time ROS start time. */
     void setGlobalTraj(const PolynomialTraj &traj, const rclcpp::Time &time)
     {
       global_traj_ = traj;
@@ -48,6 +57,7 @@ namespace scan_planner
       last_progress_time_ = 0.0;
     }
 
+    /** @brief Inserts a local B-spline into the global time line. @param traj Position spline. @param local_ts Global insertion start time. @param local_te Global insertion end time. @param time_inc Added duration. */
     void setLocalTraj(UniformBspline traj, double local_ts, double local_te, double time_inc)
     {
       local_traj_.resize(3);
@@ -62,6 +72,7 @@ namespace scan_planner
       last_time_inc_ = time_inc;
     }
 
+    /** @brief Evaluates the combined trajectory position. @param t Global trajectory time. @return Position. */
     Eigen::Vector3d getPosition(double t)
     {
       if (t >= -1e-3 && t <= local_start_time_)
@@ -80,6 +91,7 @@ namespace scan_planner
       }
     }
 
+    /** @brief Evaluates the combined trajectory velocity. @param t Global trajectory time. @return Velocity. */
     Eigen::Vector3d getVelocity(double t)
     {
       if (t >= -1e-3 && t <= local_start_time_)
@@ -98,6 +110,7 @@ namespace scan_planner
       }
     }
 
+    /** @brief Evaluates the combined trajectory acceleration. @param t Global trajectory time. @return Acceleration. */
     Eigen::Vector3d getAcceleration(double t)
     {
       if (t >= -1e-3 && t <= local_start_time_)
@@ -116,9 +129,16 @@ namespace scan_planner
       }
     }
 
-    // get Bspline parameterization data of a local trajectory within a sphere
-    // start_t: start time of the trajectory
-    // dist_pt: distance between the discretized points
+    /**
+     * @brief Samples a forward segment bounded by a spatial radius.
+     * @param start_t Global time at which sampling begins.
+     * @param des_radius Desired radius from the first point.
+     * @param dist_pt Desired spacing between samples.
+     * @param[out] point_set Sampled positions.
+     * @param[out] start_end_derivative Start/end velocity and acceleration.
+     * @param[out] dt Sampling interval.
+     * @param[out] seg_duration Sampled segment duration.
+     */
     void getTrajByRadius(const double &start_t, const double &des_radius, const double &dist_pt,
                          vector<Eigen::Vector3d> &point_set, vector<Eigen::Vector3d> &start_end_derivative,
                          double &dt, double &seg_duration)
@@ -165,10 +185,15 @@ namespace scan_planner
       start_end_derivative.push_back(getAcceleration(start_t + seg_time));
     }
 
-    // get Bspline parameterization data of a fixed duration local trajectory
-    // start_t: start time of the trajectory
-    // duration: time length of the segment
-    // seg_num: discretized the segment into *seg_num* parts
+    /**
+     * @brief Samples a fixed-duration trajectory segment.
+     * @param start_t Global start time.
+     * @param duration Segment duration.
+     * @param seg_num Number of equal sampling intervals.
+     * @param[out] point_set Sampled positions.
+     * @param[out] start_end_derivative Start/end velocity and acceleration.
+     * @param[out] dt Sampling interval.
+     */
     void getTrajByDuration(double start_t, double duration, int seg_num,
                            vector<Eigen::Vector3d> &point_set,
                            vector<Eigen::Vector3d> &start_end_derivative, double &dt)
@@ -188,6 +213,7 @@ namespace scan_planner
     }
   };
 
+  /** @brief Planner dynamic limits, discretization settings, and timing statistics. */
   struct PlanParameters
   {
     /* planning algorithm parameters */
@@ -203,6 +229,7 @@ namespace scan_planner
     double time_adjust_ = 0.0;
   };
 
+  /** @brief Published local trajectory and its timing metadata. */
   struct LocalTrajData
   {
     /* info of generated traj */

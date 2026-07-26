@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file go2_gait_publisher.cpp @brief Go2 simulation gait-state publisher. */
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -9,9 +13,11 @@
 
 namespace scan_planner
 {
+/** @brief Produces visualization joint states synchronized with simulated odometry. */
 class Go2GaitPublisher : public rclcpp::Node
 {
 public:
+  /** @brief Loads gait parameters and creates publishers/subscribers. */
   Go2GaitPublisher() : Node("go2_gait_publisher")
   {
     const double rate = declare_parameter<double>("rate", 60.0);
@@ -43,6 +49,7 @@ public:
 private:
   static constexpr double kPi = 3.14159265358979323846;
 
+  /** @brief Updates walking phase input from odometry. @param odom Simulated odometry. */
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
   {
     const double vx = odom->twist.twist.linear.x;
@@ -66,6 +73,7 @@ private:
     has_odom_ = true;
   }
 
+  /** @brief Periodically publishes joint states. */
   void timerCallback()
   {
     const auto stamp = now();
@@ -91,6 +99,7 @@ private:
     joint_pub_->publish(joint_msg_);
   }
 
+  /** @brief Publishes a neutral standing pose. @param stamp Message timestamp. */
   void publishStance(const rclcpp::Time &stamp)
   {
     const std::array<double, 12> stance = {
@@ -105,6 +114,7 @@ private:
     joint_pub_->publish(joint_msg_);
   }
 
+  /** @brief Fills one leg's gait joints. @param offset First joint-array index. @param phase Gait phase. @param ratio Motion blend ratio. @param left_side Whether this is a left leg. */
   void fillLeg(size_t offset, double phase, double ratio, bool left_side)
   {
     const double s = std::sin(phase), c = std::cos(phase), swing = std::max(0.0, s);
@@ -136,6 +146,7 @@ private:
 };
 }  // namespace scan_planner
 
+/** @brief Runs the gait-state publisher. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

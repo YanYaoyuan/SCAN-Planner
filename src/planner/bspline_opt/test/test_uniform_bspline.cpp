@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file test_uniform_bspline.cpp @brief Unit tests for uniform B-spline behavior. */
+
 #include <gtest/gtest.h>
 
 #include <Eigen/Core>

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file open_loop_controller.cpp @brief Open-loop B-spline playback controller. */
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -16,9 +20,11 @@
 
 namespace scan_planner
 {
+/** @brief Replays received B-splines without odometry feedback. */
 class OpenLoopController : public rclcpp::Node
 {
 public:
+  /** @brief Loads output frames and creates ROS interfaces. */
   OpenLoopController() : Node("open_loop_controller")
   {
     frame_id_ = declare_parameter<std::string>("frame_id", "world");
@@ -43,6 +49,7 @@ public:
   }
 
 private:
+  /** @brief Converts a B-spline message into a trajectory object. @param msg Input message. @param[out] position_traj Position spline. @return True when valid. */
   bool parseBspline(const scan_planner_msgs::msg::Bspline::ConstSharedPtr &msg,
                     UniformBspline &pos_traj)
   {
@@ -61,6 +68,7 @@ private:
     return true;
   }
 
+  /** @brief Installs or clears an open-loop trajectory. @param msg B-spline message. */
   void bsplineCallback(const scan_planner_msgs::msg::Bspline::ConstSharedPtr msg)
   {
     UniformBspline pos_traj;
@@ -75,6 +83,7 @@ private:
                 static_cast<long long>(traj_id_), traj_duration_);
   }
 
+  /** @brief Publishes evaluated open-loop state. @param stamp Timestamp. @param pos Position. @param vel Velocity. */
   void publishState(const rclcpp::Time &stamp, const Eigen::Vector3d &pos,
                     const Eigen::Vector3d &vel, double yaw, double yaw_rate)
   {
@@ -95,6 +104,7 @@ private:
     odom_pub_->publish(odom);
   }
 
+  /** @brief Evaluates the active spline and publishes current state. */
   void publishOdom()
   {
     const auto now = this->now();
@@ -146,6 +156,7 @@ private:
 };
 }  // namespace scan_planner
 
+/** @brief Runs the open-loop controller. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file planning_visualization.cpp @brief Implements RViz planning visualization. */
+
 #include <traj_utils/planning_visualization.h>
 #include <cmath>
 #include <limits>

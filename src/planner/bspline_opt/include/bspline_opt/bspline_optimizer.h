@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file bspline_optimizer.h @brief Collision-aware B-spline optimizer API. */
+
 #ifndef _BSPLINE_OPTIMIZER_H_
 #define _BSPLINE_OPTIMIZER_H_
 
@@ -16,6 +20,7 @@
 namespace scan_planner
 {
 
+  /** @brief Stores B-spline control points and obstacle-rebound geometry. */
   class ControlPoints
   {
   public:
@@ -27,6 +32,7 @@ namespace scan_planner
     std::vector<bool> flag_temp;                          // A flag that used in many places. Initialize it every time before using it.
     // std::vector<bool> occupancy;
 
+    /** @brief Resizes all per-control-point storage. @param size_set New control-point count. */
     void resize(const int size_set)
     {
       size = size_set;
@@ -44,45 +50,75 @@ namespace scan_planner
     }
   };
 
+  /**
+   * @brief Optimizes a B-spline for smoothness, clearance, feasibility, and route adherence.
+   */
   class BsplineOptimizer
   {
 
   public:
+    /** @brief Constructs an optimizer with parameters awaiting initialization. */
     BsplineOptimizer() {}
+    /** @brief Destroys the optimizer. */
     ~BsplineOptimizer() {}
 
-    /* main API */
+    /** @brief Binds the collision map. @param env Shared local occupancy map. */
     void setEnvironment(const GridMap::Ptr &env);
+    /** @brief Loads optimization parameters from a ROS node. @param node Parameter-owning node. */
     void setParam(rclcpp::Node *node);
+    /**
+     * @brief Runs the generic configured B-spline optimization.
+     * @param points Initial control points.
+     * @param ts Knot interval in seconds.
+     * @param cost_function Bit mask selecting objective terms.
+     * @param max_num_id Iteration-limit profile identifier.
+     * @param max_time_id Runtime-limit profile identifier.
+     * @return Optimized control-point matrix.
+     */
     Eigen::MatrixXd BsplineOptimizeTraj(const Eigen::MatrixXd &points, const double &ts,
                                         const int &cost_function, int max_num_id, int max_time_id);
 
-    /* helper function */
-
-    // required inputs
+    /** @brief Replaces current control points. @param points Control-point matrix. */
     void setControlPoints(const Eigen::MatrixXd &points);
+    /** @brief Sets the knot interval. @param ts Interval in seconds. */
     void setBsplineInterval(const double &ts);
+    /** @brief Selects generic objective terms. @param cost_function Objective bit mask. */
     void setCostFunction(const int &cost_function);
+    /** @brief Selects generic termination profiles. @param max_num_id Iteration profile. @param max_time_id Runtime profile. */
     void setTerminateCond(const int &max_num_id, const int &max_time_id);
+    /** @brief Enables route adherence for rebound optimization. @param points Reference control points. */
     void setReboundReference(const Eigen::MatrixXd &points);
+    /** @brief Disables and clears the rebound reference. */
     void clearReboundReference();
 
-    // optional inputs
+    /** @brief Sets a geometric guide path. @param guide_pt Ordered guide points. */
     void setGuidePath(const vector<Eigen::Vector3d> &guide_pt);
+    /** @brief Adds waypoint constraints. @param waypts Waypoint coordinates. @param waypt_idx Associated control-point indices. */
     void setWaypoints(const vector<Eigen::Vector3d> &waypts,
                       const vector<int> &waypt_idx); // N-2 constraints at most
 
+    /** @brief Runs the legacy generic optimization using configured state. */
     void optimize();
 
+    /** @brief Returns current control points. @return Control-point matrix. */
     Eigen::MatrixXd getControlPoints();
 
     AStar::Ptr a_star_;
     std::vector<Eigen::Vector3d> ref_pts_;
 
+    /**
+     * @brief Initializes rebound directions and obstacle bypass paths.
+     * @param[in,out] init_points Initial control points; may be adjusted for rebound.
+     * @param flag_first_init Whether to reset all optimizer state.
+     * @return A* bypass paths generated for collision segments.
+     */
     std::vector<std::vector<Eigen::Vector3d>> initControlPoints(Eigen::MatrixXd &init_points, bool flag_first_init = true);
+    /** @brief Runs rebound optimization. @param[out] optimal_points Optimized control points. @param ts Knot interval. @return True when collision-free optimization succeeds. */
     bool BsplineOptimizeTrajRebound(Eigen::MatrixXd &optimal_points, double ts); // must be called after initControlPoints()
+    /** @brief Refines a dynamically infeasible trajectory. @param init_points Initial control points. @param ts Knot interval. @param[out] optimal_points Refined points. @return True on success. */
     bool BsplineOptimizeTrajRefine(const Eigen::MatrixXd &init_points, const double ts, Eigen::MatrixXd &optimal_points);
 
+    /** @brief Returns the configured B-spline degree. @return Polynomial degree. */
     inline int getOrder(void) { return order_; }
 
   private:
@@ -133,29 +169,45 @@ namespace scan_planner
     /* cost function */
     /* calculate each part of cost function with control points q as input */
 
+    /** @brief Adapter for the generic optimizer. @param x Variables. @param[out] grad Gradient. @param func_data Optimizer instance. @return Combined cost. */
     static double costFunction(const std::vector<double> &x, std::vector<double> &grad, void *func_data);
+    /** @brief Combines selected generic costs. @param x Variables. @param[out] grad Gradient. @param[out] cost Cost. */
     void combineCost(const std::vector<double> &x, vector<double> &grad, double &cost);
 
-    // q contains all control points
+    /** @brief Computes smoothness cost. @param q Control points. @param[out] cost Cost. @param[out] gradient Gradient. @param falg_use_jerk True for jerk, false for acceleration. */
     void calcSmoothnessCost(const Eigen::MatrixXd &q, double &cost,
                             Eigen::MatrixXd &gradient, bool falg_use_jerk = true);
+    /** @brief Computes dynamic-limit cost. @param q Control points. @param[out] cost Cost. @param[out] gradient Gradient. */
     void calcFeasibilityCost(const Eigen::MatrixXd &q, double &cost,
                              Eigen::MatrixXd &gradient);
+    /** @brief Computes obstacle rebound cost. @param q Control points. @param[out] cost Cost. @param[out] gradient Gradient. @param iter_num Optimizer iteration. @param smoothness_cost Current smoothness cost. */
     void calcDistanceCostRebound(const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost);
+    /** @brief Computes reference-route adherence cost. @param q Control points. @param[out] cost Cost. @param[out] gradient Gradient. */
     void calcReboundReferenceCost(const Eigen::MatrixXd &q, double &cost,
                                   Eigen::MatrixXd &gradient);
+    /** @brief Computes curve-fitting cost. @param q Control points. @param[out] cost Cost. @param[out] gradient Gradient. */
     void calcFitnessCost(const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient);
+    /** @brief Detects residual collisions and updates rebound directions. @return True when optimization must restart. */
     bool check_collision_and_rebound(void);
+    /** @brief Estimates planar segment heading. @param from Segment start. @param to Segment end. @return Yaw in radians. */
     double estimateSegmentYaw(const Eigen::Vector3d &from, const Eigen::Vector3d &to) const;
+    /** @brief Estimates heading at one control point. @param q Control points. @param id Control-point index. @return Yaw in radians. */
     double estimateControlPointYaw(const Eigen::MatrixXd &q, int id) const;
 
+    /** @brief L-BFGS early-stop callback. @param func_data Optimizer instance. @param x Variables. @param g Gradient. @param fx Cost. @param xnorm Variable norm. @param gnorm Gradient norm. @param step Line-search step. @param n Variable count. @param k Iteration. @param ls Line-search iteration. @return Nonzero to stop. */
     static int earlyExit(void *func_data, const double *x, const double *g, const double fx, const double xnorm, const double gnorm, const double step, int n, int k, int ls);
+    /** @brief L-BFGS rebound-cost callback. @param func_data Optimizer instance. @param x Variables. @param[out] grad Gradient. @param n Variable count. @return Cost. */
     static double costFunctionRebound(void *func_data, const double *x, double *grad, const int n);
+    /** @brief L-BFGS refinement-cost callback. @param func_data Optimizer instance. @param x Variables. @param[out] grad Gradient. @param n Variable count. @return Cost. */
     static double costFunctionRefine(void *func_data, const double *x, double *grad, const int n);
 
+    /** @brief Runs collision-rebound L-BFGS. @return True on success. */
     bool rebound_optimize();
+    /** @brief Runs feasibility-refinement L-BFGS. @return True on success. */
     bool refine_optimize();
+    /** @brief Combines rebound objective terms. @param x Variables. @param[out] grad Gradient. @param[out] f_combine Total cost. @param n Variable count. */
     void combineCostRebound(const double *x, double *grad, double &f_combine, const int n);
+    /** @brief Combines refinement objective terms. @param x Variables. @param[out] grad Gradient. @param[out] f_combine Total cost. @param n Variable count. */
     void combineCostRefine(const double *x, double *grad, double &f_combine, const int n);
 
     /* for benchmark evaluation only */

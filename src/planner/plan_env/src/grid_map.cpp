@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file grid_map.cpp @brief Implements map updates, inflation, and collision queries. */
+
 #include "plan_env/grid_map.h"
 #include <cmath>
 #include <limits>
@@ -7,6 +11,14 @@
 
 namespace
 {
+/**
+ * @brief Declares and reads a ROS parameter.
+ * @tparam T Parameter value type.
+ * @param node Parameter-owning node.
+ * @param name Fully qualified parameter name.
+ * @param[out] value Loaded value.
+ * @param default_value Value used when undeclared.
+ */
 template <typename T>
 void load_parameter(rclcpp::Node *node, const std::string &name, T &value, const T &default_value)
 {

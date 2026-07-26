@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file polynomial_traj.h @brief Polynomial and minimum-snap trajectory API. */
+
 #ifndef _POLYNOMIAL_TRAJ_H
 #define _POLYNOMIAL_TRAJ_H
 
@@ -6,6 +10,7 @@
 
 using std::vector;
 
+/** @brief Piecewise polynomial trajectory with position, velocity, and acceleration evaluation. */
 class PolynomialTraj
 {
 private:
@@ -22,24 +27,29 @@ private:
   double length;
 
 public:
+  /** @brief Constructs an empty trajectory. */
   PolynomialTraj(/* args */)
   {
   }
+  /** @brief Destroys the trajectory. */
   ~PolynomialTraj()
   {
   }
 
+  /** @brief Removes all polynomial segments and cached statistics. */
   void reset()
   {
     times.clear(), cxs.clear(), cys.clear(), czs.clear();
     time_sum = 0.0, num_seg = 0;
   }
 
+  /** @brief Appends one polynomial segment. @param cx X coefficients in descending order. @param cy Y coefficients. @param cz Z coefficients. @param t Segment duration. */
   void addSegment(vector<double> cx, vector<double> cy, vector<double> cz, double t)
   {
     cxs.push_back(cx), cys.push_back(cy), czs.push_back(cz), times.push_back(t);
   }
 
+  /** @brief Finalizes segment count and total duration after construction. */
   void init()
   {
     num_seg = times.size();
@@ -50,11 +60,13 @@ public:
     }
   }
 
+  /** @brief Returns segment durations. @return Duration vector. */
   vector<double> getTimes()
   {
     return times;
   }
 
+  /** @brief Returns coefficients for one axis. @param axis 0 for X, 1 for Y, 2 for Z. @return Per-segment coefficients. */
   vector<vector<double>> getCoef(int axis)
   {
     switch (axis)
@@ -73,6 +85,7 @@ public:
     return empty;
   }
 
+  /** @brief Evaluates position. @param t Time from trajectory start. @return Position. */
   Eigen::Vector3d evaluate(double t)
   {
     /* detetrmine segment num */
@@ -97,6 +110,7 @@ public:
     return pt;
   }
 
+  /** @brief Evaluates velocity. @param t Time from trajectory start. @return Velocity. */
   Eigen::Vector3d evaluateVel(double t)
   {
     /* detetrmine segment num */
@@ -128,6 +142,7 @@ public:
     return vel;
   }
 
+  /** @brief Evaluates acceleration. @param t Time from trajectory start. @return Acceleration. */
   Eigen::Vector3d evaluateAcc(double t)
   {
     /* detetrmine segment num */
@@ -159,12 +174,13 @@ public:
     return acc;
   }
 
-  /* for evaluating traj, should be called in sequence!!! */
+  /** @brief Returns total trajectory duration. @return Duration in seconds. */
   double getTimeSum()
   {
     return this->time_sum;
   }
 
+  /** @brief Samples the trajectory at 0.01-second intervals. @return Position samples. */
   vector<Eigen::Vector3d> getTraj()
   {
     double eval_t = 0.0;
@@ -178,6 +194,7 @@ public:
     return traj_vec3d;
   }
 
+  /** @brief Computes length from the latest sample cache. @return Approximate path length. */
   double getLength()
   {
     length = 0.0;
@@ -192,11 +209,13 @@ public:
     return length;
   }
 
+  /** @brief Computes mean speed from cached length and duration. @return Mean speed. */
   double getMeanVel()
   {
-    double mean_vel = length / time_sum;
+    return length / time_sum;
   }
 
+  /** @brief Computes a segment acceleration cost approximation. @return Acceleration cost. */
   double getAccCost()
   {
     double cost = 0.0;
@@ -212,6 +231,7 @@ public:
     return cost;
   }
 
+  /** @brief Integrates squared jerk analytically. @return Jerk cost. */
   double getJerk()
   {
     double jerk = 0.0;
@@ -246,6 +266,7 @@ public:
     return jerk;
   }
 
+  /** @brief Computes sampled velocity statistics. @param[out] mean_v Mean speed. @param[out] max_v Maximum speed. */
   void getMeanAndMaxVel(double &mean_v, double &max_v)
   {
     int num = 0;
@@ -285,6 +306,7 @@ public:
     mean_v = mean_v / double(num);
   }
 
+  /** @brief Computes sampled acceleration statistics. @param[out] mean_a Mean acceleration norm. @param[out] max_a Maximum acceleration norm. */
   void getMeanAndMaxAcc(double &mean_a, double &max_a)
   {
     int num = 0;
@@ -324,10 +346,12 @@ public:
     mean_a = mean_a / double(num);
   }
 
+  /** @brief Generates a minimum-snap trajectory through waypoints. @param Pos Waypoint matrix with points by column. @param start_vel Initial velocity. @param end_vel Final velocity. @param start_acc Initial acceleration. @param end_acc Final acceleration. @param Time Segment durations. @return Generated trajectory. */
   static PolynomialTraj minSnapTraj(const Eigen::MatrixXd &Pos, const Eigen::Vector3d &start_vel,
                                     const Eigen::Vector3d &end_vel, const Eigen::Vector3d &start_acc,
                                     const Eigen::Vector3d &end_acc, const Eigen::VectorXd &Time);
 
+  /** @brief Generates a single quintic segment. @param start_pt Initial position. @param start_vel Initial velocity. @param start_acc Initial acceleration. @param end_pt Final position. @param end_vel Final velocity. @param end_acc Final acceleration. @param t Duration. @return Generated trajectory. */
   static PolynomialTraj one_segment_traj_gen(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                              const Eigen::Vector3d &end_pt, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
                                              double t);

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file go2_kinematic_sim.cpp @brief Lightweight planner kinematic simulator. */
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -13,9 +17,11 @@
 
 namespace scan_planner
 {
+/** @brief Integrates body velocity commands into deterministic planar odometry. */
 class Go2KinematicSim : public rclcpp::Node
 {
 public:
+  /** @brief Loads simulator parameters and creates ROS interfaces. */
   Go2KinematicSim() : Node("go2_kinematic_sim")
   {
     x_ = declare_parameter<double>("init_x", 0.0);
@@ -46,6 +52,7 @@ public:
 private:
   static constexpr double kMaxVYawLimit = 1.0;
 
+  /** @brief Wraps an angle to [-pi, pi]. @param angle Input angle. @return Wrapped angle. */
   static double normalizeAngle(double angle)
   {
     while (angle > M_PI) angle -= 2.0 * M_PI;
@@ -53,6 +60,7 @@ private:
     return angle;
   }
 
+  /** @brief Receives the commanded body twist. @param msg Velocity command. */
   void cmdCallback(const geometry_msgs::msg::Twist::ConstSharedPtr msg)
   {
     vx_cmd_ = std::clamp(msg->linear.x, -max_vx_, max_vx_);
@@ -61,6 +69,7 @@ private:
     last_cmd_time_ = now();
   }
 
+  /** @brief Publishes integrated odometry. @param stamp Message timestamp. */
   void publishOdom(const rclcpp::Time &stamp)
   {
     tf2::Quaternion quaternion;
@@ -92,6 +101,7 @@ private:
     }
   }
 
+  /** @brief Advances the kinematic state by one timer period. */
   void simCallback()
   {
     const auto current_time = now();
@@ -126,6 +136,7 @@ private:
 };
 }  // namespace scan_planner
 
+/** @brief Runs the kinematic simulator. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

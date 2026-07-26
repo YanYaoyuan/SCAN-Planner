@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file zsibot_cmd_bridge.cpp @brief ROS 2 to ZsiBot SDK command bridge. */
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -21,9 +25,11 @@ namespace zsibot_model = mc_sdk::zsl_1w;
 
 namespace zsibot_cmd_bridge
 {
+/** @brief Converts ROS body-twist commands into guarded ZsiBot SDK commands. */
 class ZsiBotCmdBridge : public rclcpp::Node
 {
 public:
+  /** @brief Loads network, safety, and command-limit parameters and initializes the SDK. */
   ZsiBotCmdBridge() : Node("zsibot_cmd_bridge")
   {
     local_ip_ = declare_parameter<std::string>("local_ip", "192.168.168.10");
@@ -93,6 +99,7 @@ public:
     RCLCPP_INFO(get_logger(), "ZsiBot cmd bridge ready");
   }
 
+  /** @brief Sends a final stop command and releases SDK resources. */
   ~ZsiBotCmdBridge() override
   {
     try
@@ -107,6 +114,7 @@ public:
   }
 
 private:
+  /** @brief Sanitizes and limits one command component. @param value Requested value. @param limit Absolute limit. @return Safe limited value. */
   static double clampFinite(double value, double limit)
   {
     if (!std::isfinite(value))
@@ -115,11 +123,13 @@ private:
     return std::clamp(value, -abs_limit, abs_limit);
   }
 
+  /** @brief Zeros a small command component. @param value Requested value. @param deadband Deadband threshold. @return Filtered value. */
   static double applyDeadband(double value, double deadband)
   {
     return std::abs(value) < std::abs(deadband) ? 0.0 : value;
   }
 
+  /** @brief Receives the latest planner velocity command. @param msg Twist command. */
   void cmdCallback(const geometry_msgs::msg::Twist::ConstSharedPtr msg)
   {
     vx_ = applyDeadband(clampFinite(msg->linear.x, max_vx_), deadband_vx_);
@@ -129,6 +139,7 @@ private:
     have_cmd_ = true;
   }
 
+  /** @brief Enforces timeout/stand-up state and sends the current command. */
   void timerCallback()
   {
     if (waiting_for_standup_)
@@ -155,6 +166,7 @@ private:
     maybeLogStatus(false);
   }
 
+  /** @brief Sends one high-level SDK movement request. @param vx Forward velocity. @param vy Lateral velocity. @param yaw_rate Yaw rate. */
   void sendMove(double vx, double vy, double yaw_rate)
   {
     const uint32_t ret = highlevel_.move(
@@ -166,6 +178,7 @@ private:
     }
   }
 
+  /** @brief Runs the optional stand-up delay state. */
   void handleStandupWait()
   {
     const auto current_time = now();
@@ -215,6 +228,7 @@ private:
     }
   }
 
+  /** @brief Emits throttled bridge diagnostics. @param timed_out Whether the command watchdog expired. */
   void maybeLogStatus(bool timed_out)
   {
     if (!log_sdk_status_ || status_log_period_ <= 0.0)
@@ -286,6 +300,7 @@ private:
 };
 }  // namespace zsibot_cmd_bridge
 
+/** @brief Runs the direct ZsiBot SDK bridge. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

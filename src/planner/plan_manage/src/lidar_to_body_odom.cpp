@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file lidar_to_body_odom.cpp @brief Converts lidar odometry to body-center odometry. */
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -14,9 +18,11 @@
 
 namespace scan_planner
 {
+/** @brief Applies the calibrated lidar-to-body rigid transform to odometry and covariance. */
 class LidarToBodyOdom : public rclcpp::Node
 {
 public:
+  /** @brief Loads extrinsics/frame constraints and creates ROS interfaces. */
   LidarToBodyOdom() : Node("lidar_to_body_odom")
   {
     body_frame_id_ = declare_parameter<std::string>("body_frame_id", "scan_base_link");
@@ -49,6 +55,7 @@ public:
   }
 
 private:
+  /** @brief Converts roll-pitch-yaw to a rotation matrix. @param roll Roll angle. @param pitch Pitch angle. @param yaw Yaw angle. @return Rotation matrix. */
   static Eigen::Matrix3d rpyToRotation(double roll, double pitch, double yaw)
   {
     const Eigen::AngleAxisd roll_angle(roll, Eigen::Vector3d::UnitX());
@@ -57,12 +64,14 @@ private:
     return (yaw_angle * pitch_angle * roll_angle).toRotationMatrix();
   }
 
+  /** @brief Validates quaternion finiteness and norm. @param q Quaternion. @return True when usable. */
   static bool validQuaternion(const geometry_msgs::msg::Quaternion& q)
   {
     const double norm2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
     return std::isfinite(norm2) && norm2 > 1e-12;
   }
 
+  /** @brief Builds a skew-symmetric cross-product matrix. @param v Vector. @return Skew matrix. */
   static Eigen::Matrix3d skew(const Eigen::Vector3d &v)
   {
     Eigen::Matrix3d matrix;
@@ -72,6 +81,7 @@ private:
     return matrix;
   }
 
+  /** @brief Rotates and translates pose/twist covariance. @param input Input covariance. @param rotation Rigid-body rotation. @param translation Lever arm. @param transform_translation Whether to apply lever-arm coupling. @param[out] output Transformed covariance. */
   static void transformCovariance(
       const std::array<double, 36> &input,
       const Eigen::Matrix<double, 6, 6> &jacobian,
@@ -87,6 +97,7 @@ private:
         output[6 * row + col] = covariance(row, col);
   }
 
+  /** @brief Converts one lidar odometry sample. @param msg Lidar odometry. */
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
   {
     if (!msg)
@@ -191,6 +202,7 @@ private:
     maybeLogStatus(body_odom);
   }
 
+  /** @brief Broadcasts the body transform represented by odometry. @param body_odom Body odometry. */
   void publishTransform(const nav_msgs::msg::Odometry& body_odom)
   {
     geometry_msgs::msg::TransformStamped transform;
@@ -203,6 +215,7 @@ private:
     tf_broadcaster_->sendTransform(transform);
   }
 
+  /** @brief Emits throttled conversion diagnostics. @param body_odom Latest body odometry. */
   void maybeLogStatus(const nav_msgs::msg::Odometry& body_odom)
   {
     if (status_log_period_ <= 0.0)
@@ -234,6 +247,7 @@ private:
 };
 }  // namespace scan_planner
 
+/** @brief Runs the lidar-to-body odometry converter. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file zsibot_sdk_proxy.cpp @brief UDP-to-ZsiBot SDK proxy. */
+
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -38,11 +42,14 @@ using Clock = std::chrono::steady_clock;
 
 std::atomic_bool g_running{true};
 
-void handleSignal(int)
+/** @brief Requests orderly proxy shutdown. @param signal_number Received POSIX signal number. */
+void handleSignal(int signal_number)
 {
+  (void)signal_number;
   g_running = false;
 }
 
+/** @brief Sanitizes and limits a command component. @param value Requested value. @param limit Absolute limit. @return Limited finite value. */
 double clampFinite(double value, double limit)
 {
   if (!std::isfinite(value))
@@ -51,6 +58,7 @@ double clampFinite(double value, double limit)
   return std::clamp(value, -abs_limit, abs_limit);
 }
 
+/** @brief Command-line and SDK networking options for the proxy process. */
 struct Options
 {
   std::string listen_ip{"0.0.0.0"};
@@ -71,6 +79,7 @@ struct Options
   double status_log_period{2.0};
 };
 
+/** @brief Reads a string option value. @param argc Argument count. @param argv Argument vector. @param[in,out] i Current argument index. @param[out] value Parsed value. @return True when present. */
 bool readOption(int argc, char** argv, int& i, std::string& value)
 {
   if (i + 1 >= argc)
@@ -79,6 +88,7 @@ bool readOption(int argc, char** argv, int& i, std::string& value)
   return true;
 }
 
+/** @brief Reads an integer option value. @param argc Argument count. @param argv Argument vector. @param[in,out] i Current argument index. @param[out] value Parsed value. @return True when present. */
 bool readOption(int argc, char** argv, int& i, int& value)
 {
   std::string text;
@@ -88,6 +98,7 @@ bool readOption(int argc, char** argv, int& i, int& value)
   return true;
 }
 
+/** @brief Reads a floating-point option value. @param argc Argument count. @param argv Argument vector. @param[in,out] i Current argument index. @param[out] value Parsed value. @return True when present. */
 bool readOption(int argc, char** argv, int& i, double& value)
 {
   std::string text;
@@ -97,6 +108,7 @@ bool readOption(int argc, char** argv, int& i, double& value)
   return true;
 }
 
+/** @brief Reads a Boolean option value. @param argc Argument count. @param argv Argument vector. @param[in,out] i Current argument index. @param[out] value Parsed value. @return True when present. */
 bool readOption(int argc, char** argv, int& i, bool& value)
 {
   std::string text;
@@ -107,6 +119,7 @@ bool readOption(int argc, char** argv, int& i, bool& value)
   return true;
 }
 
+/** @brief Prints command-line usage. @param argv0 Executable name. */
 void printUsage(const char* argv0)
 {
   std::cerr
@@ -125,6 +138,7 @@ void printUsage(const char* argv0)
       << "  --require-standing true|false  default true\n";
 }
 
+/** @brief Parses and validates proxy options. @param argc Argument count. @param argv Argument vector. @return Validated options. */
 Options parseOptions(int argc, char** argv)
 {
   Options options;
@@ -166,6 +180,7 @@ Options parseOptions(int argc, char** argv)
   return options;
 }
 
+/** @brief One decoded UDP body-velocity command. */
 struct Command
 {
   uint64_t seq{0};
@@ -174,6 +189,7 @@ struct Command
   double yaw_rate{0.0};
 };
 
+/** @brief Decodes one versioned text command. @param data Datagram bytes. @param size Datagram size. @param[out] command Parsed command. @return True when valid. */
 bool parsePacket(const char* data, size_t size, Command& command)
 {
   std::string text(data, size);
@@ -193,6 +209,7 @@ bool parsePacket(const char* data, size_t size, Command& command)
   return true;
 }
 
+/** @brief Creates and binds the receive socket. @param options Network options. @return Socket descriptor. */
 int createUdpSocket(const Options& options)
 {
   const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -219,6 +236,7 @@ int createUdpSocket(const Options& options)
 }
 }  // namespace
 
+/** @brief Runs the UDP-to-SDK proxy process. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char** argv)
 {
   std::signal(SIGINT, handleSignal);

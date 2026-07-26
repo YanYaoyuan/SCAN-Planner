@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file gradient_descent_optimizer.cpp @brief Implements gradient-descent optimization. */
+
 #include <bspline_opt/gradient_descent_optimizer.h>
 
 #define RESET "\033[0m"

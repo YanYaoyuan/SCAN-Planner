@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file scan_replan_fsm.cpp @brief Implements replanning modes and safety-state transitions. */
 
 #include <plan_manage/scan_replan_fsm.h>
 #include <cmath>
@@ -8,6 +11,14 @@
 
 namespace
 {
+  /**
+   * @brief Declares and reads a ROS parameter.
+   * @tparam T Parameter value type.
+   * @param node Parameter-owning node.
+   * @param name Fully qualified parameter name.
+   * @param default_value Value used when undeclared.
+   * @return Loaded parameter value.
+   */
   template <typename T>
   T load_parameter(rclcpp::Node *node, const std::string &name, const T &default_value)
   {

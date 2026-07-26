@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file raycast.cpp @brief Implements voxel-grid ray traversal. */
+
 #include <Eigen/Eigen>
 #include <cmath>
 #include <iostream>

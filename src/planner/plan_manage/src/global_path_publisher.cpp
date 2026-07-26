@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file global_path_publisher.cpp @brief Global reference-path publisher. */
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -19,9 +23,11 @@
 
 namespace scan_planner
 {
+/** @brief Builds a global-frame reference route from RViz goals or configured waypoints. */
 class GlobalPathPublisher : public rclcpp::Node
 {
 public:
+  /** @brief Loads path parameters and creates ROS interfaces. */
   GlobalPathPublisher() : Node("global_path_publisher")
   {
     frame_id_ = declare_parameter<std::string>("frame_id", "lio_map");
@@ -73,6 +79,7 @@ public:
   }
 
 private:
+  /** @brief Validates a 3D point. @param position Point to test. @return True when finite. */
   static bool finitePosition(const geometry_msgs::msg::Point &position)
   {
     return std::isfinite(position.x) &&
@@ -80,6 +87,7 @@ private:
            std::isfinite(position.z);
   }
 
+  /** @brief Updates the current global body pose. @param message Body odometry. */
   void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr message)
   {
     if (message->header.frame_id != frame_id_)
@@ -130,6 +138,7 @@ private:
     }
   }
 
+  /** @brief Transforms a goal into the configured global frame. @param input Input goal. @param[out] output Transformed goal. @return True on success. */
   bool transformGoal(
       const geometry_msgs::msg::PoseStamped &input,
       geometry_msgs::msg::PoseStamped &output)
@@ -170,6 +179,7 @@ private:
     }
   }
 
+  /** @brief Receives an RViz goal and publishes an interpolated path. @param message Goal pose. */
   void goalCallback(
       const geometry_msgs::msg::PoseStamped::ConstSharedPtr message)
   {
@@ -198,6 +208,7 @@ private:
     publishPath(path, "goal");
   }
 
+  /** @brief Publishes the parameter-defined waypoint route. @return True when valid and published. */
   bool publishConfiguredPath()
   {
     nav_msgs::msg::Path path;
@@ -227,6 +238,7 @@ private:
     return true;
   }
 
+  /** @brief Appends evenly spaced samples for one route segment. @param start Segment start. @param end Segment end. @param[in,out] path Destination path. */
   void appendSegment(
       const geometry_msgs::msg::Point &start,
       const geometry_msgs::msg::Point &end,
@@ -260,6 +272,7 @@ private:
     }
   }
 
+  /** @brief Validates and publishes a completed route. @param[in,out] path Path message. @param source Diagnostic source label. */
   void publishPath(nav_msgs::msg::Path &path, const char *source)
   {
     if (path.poses.size() < 2)
@@ -300,6 +313,7 @@ private:
 };
 }  // namespace scan_planner
 
+/** @brief Runs the global path publisher. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

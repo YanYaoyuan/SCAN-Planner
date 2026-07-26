@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file polynomial_traj.cpp @brief Implements polynomial trajectory generation. */
+
 #include <iostream>
 #include <traj_utils/polynomial_traj.h>
 

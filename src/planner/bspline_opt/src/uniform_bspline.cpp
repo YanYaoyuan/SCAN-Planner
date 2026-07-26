@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file uniform_bspline.cpp @brief Implements uniform B-spline operations. */
+
 #include "bspline_opt/uniform_bspline.h"
 
 namespace scan_planner

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file grid_map.h @brief Sliding occupancy-map and collision-query API. */
+
 #ifndef _GRID_MAP_H
 #define _GRID_MAP_H
 
@@ -34,9 +38,10 @@
 #define logit(x) (log((x) / (1 - (x))))
 
 using namespace std;
-// voxel hashing
+/** @brief Hashes fixed-size Eigen matrices for unordered containers. @tparam T Eigen matrix type. */
 template <typename T>
 struct matrix_hash {
+  /** @brief Computes a combined scalar hash. @param matrix Matrix key. @return Hash value. */
   std::size_t operator()(T const& matrix) const {
     size_t seed = 0;
     for (size_t i = 0; i < matrix.size(); ++i) {
@@ -49,6 +54,7 @@ struct matrix_hash {
 
 // constant parameters
 
+/** @brief Immutable and runtime-configured parameters used by GridMap. */
 struct MappingParameters {
 
   /* map properties */
@@ -99,6 +105,7 @@ struct MappingParameters {
 
 // intermediate mapping data for fusion
 
+/** @brief Mutable sensor-fusion buffers and map-update state. */
 struct MappingData {
   // main map data, occupancy of each voxel and Euclidean distance
 
@@ -148,52 +155,86 @@ struct MappingData {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
+/** @brief Maintains a sliding 3D occupancy grid and inflated robot collision layer. */
 class GridMap {
 public:
+  /** @brief Constructs an uninitialized map. */
   GridMap() {}
+  /** @brief Destroys the map and ROS interfaces. */
   ~GridMap() {}
 
   enum { INVALID_IDX = -10000 };
 
-  // occupancy map management
+  /** @brief Resets the complete occupancy buffer. */
   void resetBuffer();
+  /** @brief Resets voxels inside a world-coordinate box. @param min Minimum corner. @param max Maximum corner. */
   void resetBuffer(Eigen::Vector3d min, Eigen::Vector3d max);
 
+  /** @brief Converts a world position to a global voxel index. @param pos World position. @param[out] id Voxel index. */
   inline void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& id);
+  /** @brief Converts a global voxel index to its center position. @param id Voxel index. @param[out] pos World position. */
   inline void indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos);
+  /** @brief Converts a global voxel index to circular-buffer address. @param id Voxel index. @return Buffer address. */
   inline int toAddress(const Eigen::Vector3i& id);
+  /** @brief Converts index components to circular-buffer address. @param x X index. @param y Y index. @param z Z index. @return Buffer address. */
   inline int toAddress(int& x, int& y, int& z);
+  /** @brief Tests whether a position lies in the active map. @param pos World position. @return True when inside. */
   inline bool isInMap(const Eigen::Vector3d& pos);
+  /** @brief Tests whether an index lies in the active map. @param idx Global index. @return True when inside. */
   inline bool isInMap(const Eigen::Vector3i& idx);
 
+  /** @brief Assigns a binary occupancy state. @param pos World position. @param occ 1 for occupied, 0 for free. */
   inline void setOccupancy(Eigen::Vector3d pos, double occ = 1);
+  /** @brief Marks a position occupied. @param pos World position. */
   inline void setOccupied(Eigen::Vector3d pos);
+  /** @brief Queries raw occupancy by position. @param pos World position. @return -1 outside, 0 free, 1 occupied. */
   inline int getOccupancy(Eigen::Vector3d pos);
+  /** @brief Queries raw occupancy by index. @param id Global voxel index. @return -1 outside, 0 free, 1 occupied. */
   inline int getOccupancy(Eigen::Vector3i id);
+  /** @brief Queries inflated occupancy for the double-cylinder body model. @param pos Body-center position. @param yaw Body yaw. @return -1 outside, 0 free, 1 occupied. */
   inline int getInflateOccupancy(Eigen::Vector3d pos, double yaw);
 
+  /** @brief Clamps an index to map bounds. @param[in,out] id Index to clamp. */
   inline void boundIndex(Eigen::Vector3i& id);
+  /** @brief Tests whether an indexed cell is unobserved. @param id Voxel index. @return True when unknown. */
   inline bool isUnknown(const Eigen::Vector3i& id);
+  /** @brief Tests whether a position is unobserved. @param pos World position. @return True when unknown. */
   inline bool isUnknown(const Eigen::Vector3d& pos);
+  /** @brief Tests for observed, inflation-free space. @param id Voxel index. @return True when known free. */
   inline bool isKnownFree(const Eigen::Vector3i& id);
+  /** @brief Tests inflated occupancy. @param id Voxel index. @return True when known occupied. */
   inline bool isKnownOccupied(const Eigen::Vector3i& id);
 
+  /** @brief Loads parameters and creates ROS interfaces. @param node Owning ROS node. */
   void initMap(rclcpp::Node* node);
 
+  /** @brief Publishes raw occupied voxels. */
   void publishMap();
+  /** @brief Publishes inflated occupied voxels. @param all_info Whether to publish the complete buffer. */
   void publishMapInflate(bool all_info = false);
 
+  /** @brief Publishes unknown voxels. */
   void publishUnknown();
+  /** @brief Publishes the filtered depth image. */
   void publishDepth();
+  /** @brief Publishes the depth-derived point cloud. */
   void publishDepthCloud();
+  /** @brief Publishes the active sliding-map bounds marker. */
   void publishSlidingMapBBox();
+  /** @brief Publishes the sliding-map frame pose. */
   void publishSlidingMapFrame();
 
+  /** @brief Reports whether depth data have been integrated. @return True after first valid depth observation. */
   bool hasDepthObservation();
+  /** @brief Reports whether sensor odometry is valid. @return True after a valid pose. */
   bool odomValid();
+  /** @brief Returns the active map region. @param[out] ori Minimum corner. @param[out] size Region size. */
   void getRegion(Eigen::Vector3d& ori, Eigen::Vector3d& size);
+  /** @brief Returns voxel resolution. @return Resolution in meters. */
   inline double getResolution();
+  /** @brief Returns map origin. @return Origin in world coordinates. */
   Eigen::Vector3d getOrigin();
+  /** @brief Returns total voxel count. @return Buffer cell count. */
   int getVoxelNum();
 
   typedef std::shared_ptr<GridMap> Ptr;
@@ -204,40 +245,63 @@ private:
   MappingParameters mp_;
   MappingData md_;
 
-  // get depth image and sensor pose
+  /** @brief Receives synchronized depth and pose. @param img Depth image. @param pose Sensor odometry. */
   void depthPoseCallback(const sensor_msgs::msg::Image::ConstSharedPtr& img,
                          const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+  /** @brief Updates the latest sensor pose. @param pose Sensor odometry. */
   void sensorPoseCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+  /** @brief Integrates synchronized lidar cloud and pose. @param cloud Point cloud. @param pose Sensor odometry. */
   void lidarCloudPoseCallback(
       const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud,
       const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+  /** @brief Updates the sliding-map center frame. @param pose Frame odometry. */
   void slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+  /** @brief Receives a world-frame cloud without synchronized pose. @param img Point cloud message. */
   void cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& img);
 
-  // update occupancy by raycasting
+  /** @brief Timer callback that fuses pending observations. */
   void updateOccupancyCallback();
+  /** @brief Timer callback that publishes visualization topics. */
   void visCallback();
 
-  // main update process
+  /** @brief Projects the current depth image into 3D sensor rays. */
   void projectDepthImage();
+  /** @brief Integrates projected rays into log-odds occupancy. */
   void raycastProcess();
 
+  /** @brief Generates inflation offsets around one voxel. @param pt Center voxel. @param inf_step_xy Horizontal radius in cells. @param inf_step_z_up Upward radius. @param inf_step_z_down Downward radius. @param[out] pts Inflated indices. */
   inline void inflatePoint(const Eigen::Vector3i& pt, int inf_step_xy, int inf_step_z_up, int inf_step_z_down, vector<Eigen::Vector3i>& pts);
+  /** @brief Queries a selected inflation buffer. @param pos World position. @param buffer Inflation buffer. @return Occupancy state. */
   inline int getInflateOccupancyFromBuffer(Eigen::Vector3d pos, const std::vector<char>& buffer);
+  /** @brief Wraps a global index into one local dimension. @param id Global index. @param dim Dimension. @return Local circular index. */
   inline int getLocalIndex(int id, int dim) const;
+  /** @brief Converts a local index to linear address. @param id_l Local index. @return Address. */
   inline int toAddressLocal(const Eigen::Vector3i& id_l) const;
+  /** @brief Converts local components to linear address. @param x X index. @param y Y index. @param z Z index. @return Address. */
   inline int toAddressLocal(int x, int y, int z) const;
+  /** @brief Accumulates one ray observation in cache buffers. @param pos World position. @param occ Endpoint occupancy flag. @return Updated address or invalid marker. */
   int setCacheOccupancy(Eigen::Vector3d pos, int occ);
+  /** @brief Clips a ray endpoint to map bounds. @param pt Requested endpoint. @param ray_pos Ray origin. @return Closest in-map point. */
   Eigen::Vector3d closetPointInMap(const Eigen::Vector3d& pt, const Eigen::Vector3d& ray_pos);
+  /** @brief Slides the circular map around a new center. @param center New center position. */
   void updateSlidingMap(const Eigen::Vector3d& center);
+  /** @brief Recomputes metric boundaries from index boundaries. */
   void updateMapBoundaryFromIndex();
+  /** @brief Clears all occupancy and inflation data. */
   void resetAllMapData();
+  /** @brief Clears one buffer address. @param addr Linear address. */
   void resetCellByAddress(int addr);
+  /** @brief Clears one address while respecting the slide mask. @param addr Linear address. @param clear_mask Cells already cleared. */
   void resetCellByAddressForSliding(int addr, const std::vector<char>& clear_mask);
+  /** @brief Converts a circular-buffer address to global index. @param addr Linear address. @param[out] id_g Global index. */
   void hashIdToGlobalIndex(int addr, Eigen::Vector3i& id_g) const;
+  /** @brief Applies log-odds occupancy and inflation transition. @param id Global index. @param new_log_odds New log-odds value. */
   void applyOccupancyUpdate(const Eigen::Vector3i& id, double new_log_odds);
+  /** @brief Rebuilds precomputed inflation offsets. */
   void rebuildInflationOffsets();
+  /** @brief Applies an inflation-count delta. @param id Changed voxel. @param delta Count increment. @param ignore_mask Optional ignored cells. */
   void updateInflation(const Eigen::Vector3i& id, int delta, const std::vector<char>* ignore_mask = nullptr);
+  /** @brief Updates one inflation layer. @param id Changed voxel. @param delta Count increment. @param offsets Inflation offsets. @param cnt_buffer Reference counts. @param flag_buffer Occupancy flags. @param ignore_mask Optional ignored cells. */
   void updateInflationLayer(const Eigen::Vector3i& id, int delta,
                             const vector<Eigen::Vector3i>& offsets,
                             std::vector<int>& cnt_buffer,

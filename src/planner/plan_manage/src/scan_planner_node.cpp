@@ -1,9 +1,14 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file scan_planner_node.cpp @brief ROS 2 entry point for SCAN-Planner. */
+
 #include <memory>
 #include <exception>
 
 #include <rclcpp/rclcpp.hpp>
 #include <plan_manage/scan_replan_fsm.h>
 
+/** @brief Runs the SCAN planner ROS node. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
 int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Omni AI
+// SPDX-License-Identifier: Apache-2.0
+/** @file dyn_a_star.cpp @brief Implements dynamic A* local-grid search. */
+
 #include "path_searching/dyn_a_star.h"
 #include <algorithm>
 #include <chrono>
