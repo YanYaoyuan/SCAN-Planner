@@ -88,7 +88,15 @@ install(PROGRAMS scripts/keypoint_recorder.py
   DESTINATION lib/${PROJECT_NAME} OPTIONAL)
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(launch_testing_ament_cmake REQUIRED)
+  ament_add_gtest(test_reference_path_tracker
+    test/test_reference_path_tracker.cpp)
+  target_include_directories(test_reference_path_tracker PRIVATE include)
+  target_link_libraries(test_reference_path_tracker Eigen3::Eigen)
+  ament_add_gtest(test_yaw_command_filter
+    test/test_yaw_command_filter.cpp)
+  target_include_directories(test_yaw_command_filter PRIVATE include)
   add_launch_test(test/test_planner_startup.py TIMEOUT 30)
   add_launch_test(test/test_waypoint_parameters.py TIMEOUT 30)
 endif()

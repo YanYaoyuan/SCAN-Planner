@@ -49,11 +49,28 @@ scan_planner_node:
     # 清洗后路径总长度下限，防止误把单点或极短路径当成有效任务。
     fsm.reference_path_min_length: 1.0
 
-    # 每次用里程计投影更新参考路径进度时，最多允许沿路径向前跳过的弧长。
-    # 该限制用于避免闭环终点或路径交叉点在空间上很近时跳到未来路段。
+    # 单次参考折线投影允许搜索的最大前向弧长，单位 m。
     fsm.reference_progress_max_advance: 2.0
 
-    # 模式 3 完成必须同时满足：接近最终点，且参考路径剩余弧长足够小。
+    # 机器人每实际移动 1m 可为参考路径进度补充的最大弧长额度。
+    # 略大于 1 可覆盖曲线弧长和里程计弦长之间的差异。
+    fsm.reference_progress_movement_scale: 1.5
+
+    # 位移累计超过该阈值后才补充进度额度，避免高频定位抖动被累计成行驶距离。
+    fsm.reference_progress_movement_deadband: 0.02
+
+    # 接收路径时的一次性投影额度，允许吸收起点的小量定位误差；不会反复累加。
+    fsm.reference_progress_initial_credit: 0.10
+
+    # 闭环任务必须曾离开起点该距离，或沿路线实际推进等量弧长，之后才允许完成。
+    # 对直径不足该值的小闭环，弧长条件可避免任务永远无法结束。
+    fsm.reference_departure_distance: 0.60
+
+    # 至少完成该比例的参考折线弧长后才允许结束任务。
+    fsm.reference_completion_min_ratio: 0.95
+
+    # 模式 3 完成必须同时满足：已离开闭环起点、达到最小完成比例、
+    # 接近最终点，并且参考折线剩余弧长足够小。
     fsm.reference_finish_distance: 0.30
     fsm.reference_finish_remaining_length: 0.30
 

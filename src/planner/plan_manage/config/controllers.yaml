@@ -63,6 +63,39 @@ closed_loop_controller:
     # 真机第一次绕障建议 0.15~0.20；确认转得过来后再增加。
     pure_pursuit_speed: 0.20
 
+    # pure_pursuit 目标点在机体横向误差小于该值时不产生角速度，单位 m。
+    # 用于消除直线路径、定位噪声和重规划微小偏差造成的左右换向。
+    lateral_error_deadband: 0.04
+
+    # 路径期望朝向和里程计 yaw 误差小于该值时不纠偏，单位 rad。
+    # 0.035 rad 约 2 度，主要抑制融合里程计在直线附近的 yaw 零点抖动。
+    heading_error_deadband: 0.035
+
+    # Pure Pursuit 曲率绝对值小于该值时按直线处理，单位 1/m。
+    curvature_deadband: 0.04
+
+    # 控制器原始角速度死区，单位 rad/s。它位于平滑器输入端。
+    yaw_rate_deadband: 0.03
+
+    # 一阶低通滤波时间常数，单位 s。越大越平滑，但进入弯道时响应越慢。
+    yaw_filter_time_constant: 0.20
+
+    # 最大角加速度，单位 rad/s^2。限制相邻控制周期的角速度变化。
+    max_yaw_acceleration: 1.0
+
+    # 小于该幅值的反向角速度不能让输出直接换符号，而是先衰减到零。
+    # 单位 rad/s，必须不小于 yaw_rate_deadband。
+    yaw_reversal_threshold: 0.15
+
+    # 轮足底盘转向滞回：滤波角速度达到 start 才开始转，降到 stop 才停止。
+    # 这样零附近的小误差不会让实际角速度反复切换正负。
+    yaw_start_threshold: 0.12
+    yaw_stop_threshold: 0.06
+
+    # 机器狗接口要求非零 yaw_rate 的绝对值至少为 0.1 rad/s。
+    # 控制器最终只会输出 0 或绝对值不小于此值的角速度。
+    min_nonzero_yaw_rate: 0.10
+
     # 超过该时间没有收到合法 body_pose，立即清除轨迹并持续发布零速度。
     odom_timeout: 0.30
 

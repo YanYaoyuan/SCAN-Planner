@@ -20,6 +20,7 @@
 
 #include <bspline_opt/bspline_optimizer.h>
 #include <plan_env/grid_map.h>
+#include <plan_manage/reference_path_tracker.h>
 #include <scan_planner_msgs/msg/bspline.hpp>
 #include <scan_planner_msgs/msg/data_disp.hpp>
 #include <plan_manage/planner_manager.h>
@@ -73,6 +74,11 @@ namespace scan_planner
     double reference_path_closed_tolerance_;
     double reference_path_min_length_;
     double reference_progress_max_advance_;
+    double reference_progress_movement_scale_;
+    double reference_progress_movement_deadband_;
+    double reference_progress_initial_credit_;
+    double reference_departure_distance_;
+    double reference_completion_min_ratio_;
     double reference_finish_distance_;
     double reference_finish_remaining_length_;
     double odom_timeout_;
@@ -105,8 +111,10 @@ namespace scan_planner
     Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
     std::vector<Eigen::Vector3d> active_waypoints_;
     std::vector<Eigen::Vector3d> local_reference_seed_;
+    ReferencePathTracker reference_path_tracker_;
     int current_wp_;
     double reference_path_total_length_{0.0};
+    double reference_local_target_arc_length_{0.0};
 
     bool flag_escape_emergency_;
 
@@ -151,12 +159,10 @@ namespace scan_planner
     /** @brief Validates and deduplicates a supplied reference route. @param input Raw points. @param[out] output Cleaned points. @return True when valid. */
     bool prepareReferenceWaypoints(const std::vector<Eigen::Vector3d> &input,
                                    std::vector<Eigen::Vector3d> &output);
-    /** @brief Computes time-domain sampling step for reference progress. @return Step in seconds. */
-    double referenceProgressSampleStep() const;
-    /** @brief Projects odometry monotonically onto the reference route. @return Updated global trajectory time. */
+    /** @brief Projects odometry monotonically onto the immutable reference polyline. @return Updated arc-length progress in metres. */
     double updateReferencePathProgress();
     /** @brief Computes unconsumed reference-route length. @return Remaining arc length in meters. */
-    double referencePathRemainingLength();
+    double referencePathRemainingLength() const;
     /** @brief Checks route-progress and endpoint completion conditions. @return True when complete. */
     bool referencePathComplete();
     /** @brief Moves an occupied point goal backward to free space. @return True when a usable goal exists. */

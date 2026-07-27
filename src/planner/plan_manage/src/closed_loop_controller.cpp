@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
@@ -22,6 +23,7 @@
 #include <tf2/utils.hpp>
 
 #include "bspline_opt/uniform_bspline.h"
+#include "plan_manage/yaw_command_filter.h"
 
 namespace scan_planner
 {
@@ -47,6 +49,45 @@ public:
     yaw_lookahead_dist_ = std::max(0.05, declare_parameter<double>("yaw_lookahead_dist", 0.45));
     min_path_speed_ = std::max(0.0, declare_parameter<double>("min_path_speed", 0.08));
     pure_pursuit_speed_ = std::max(0.0, declare_parameter<double>("pure_pursuit_speed", 0.20));
+    lateral_error_deadband_ =
+        std::max(0.0, declare_parameter<double>("lateral_error_deadband", 0.04));
+    heading_error_deadband_ =
+        std::max(0.0, declare_parameter<double>("heading_error_deadband", 0.035));
+    curvature_deadband_ =
+        std::max(0.0, declare_parameter<double>("curvature_deadband", 0.04));
+    yaw_rate_deadband_ =
+        std::max(0.0, declare_parameter<double>("yaw_rate_deadband", 0.03));
+    yaw_filter_time_constant_ =
+        std::max(0.0, declare_parameter<double>("yaw_filter_time_constant", 0.20));
+    max_yaw_acceleration_ =
+        std::max(0.01, declare_parameter<double>("max_yaw_acceleration", 1.0));
+    yaw_reversal_threshold_ =
+        std::max(
+            yaw_rate_deadband_,
+            declare_parameter<double>("yaw_reversal_threshold", 0.15));
+    yaw_start_threshold_ =
+        std::max(
+            yaw_rate_deadband_,
+            declare_parameter<double>("yaw_start_threshold", 0.12));
+    yaw_stop_threshold_ =
+        std::clamp(
+            declare_parameter<double>("yaw_stop_threshold", 0.06),
+            0.0,
+            yaw_start_threshold_);
+    min_nonzero_yaw_rate_ =
+        std::clamp(
+            declare_parameter<double>("min_nonzero_yaw_rate", 0.10),
+            0.0,
+            max_vyaw_);
+    yaw_command_filter_.setConfig(
+        YawCommandFilter::Config{
+            yaw_rate_deadband_,
+            yaw_filter_time_constant_,
+            max_yaw_acceleration_,
+            yaw_reversal_threshold_,
+            yaw_start_threshold_,
+            yaw_stop_threshold_,
+            min_nonzero_yaw_rate_});
     odom_timeout_ = std::max(0.05, declare_parameter<double>("odom_timeout", 0.30));
     expected_frame_id_ = declare_parameter<std::string>("expected_frame_id", "");
     if (tracking_mode_ != "path_follow" && tracking_mode_ != "time")
@@ -121,12 +162,46 @@ private:
         ? odom_yaw_ : std::atan2(direction.y(), direction.x());
   }
 
-  /** @brief Publishes a zero-translation command. @param yaw_rate Optional yaw rate. */
-  void publishStop(double yaw_rate = 0.0)
+  /**
+   * @brief Filters and publishes a velocity command.
+   * @param command Raw controller command.
+   * @param dt Controller period in seconds.
+   */
+  void publishFilteredCommand(
+      geometry_msgs::msg::Twist command,
+      double dt)
   {
-    geometry_msgs::msg::Twist cmd;
-    cmd.angular.z = std::clamp(yaw_rate, -max_vyaw_, max_vyaw_);
-    cmd_vel_pub_->publish(cmd);
+    const double raw_yaw_rate =
+        std::clamp(command.angular.z, -max_vyaw_, max_vyaw_);
+    command.angular.z = std::clamp(
+        yaw_command_filter_.update(raw_yaw_rate, dt),
+        -max_vyaw_,
+        max_vyaw_);
+    cmd_vel_pub_->publish(command);
+  }
+
+  /**
+   * @brief Publishes an immediate zero command and clears filter memory.
+   *
+   * Safety stops deliberately bypass smoothing so stale angular velocity can
+   * never delay a stop.
+   */
+  void publishImmediateStop()
+  {
+    yaw_command_filter_.reset();
+    cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
+  }
+
+  /**
+   * @brief Publishes a smoothed in-place rotation command.
+   * @param yaw_rate Raw desired yaw rate in rad/s.
+   * @param dt Controller period in seconds.
+   */
+  void publishYawOnly(double yaw_rate, double dt)
+  {
+    geometry_msgs::msg::Twist command;
+    command.angular.z = yaw_rate;
+    publishFilteredCommand(command, dt);
   }
 
   /** @brief Reports whether trajectory time is frozen. @param frozen Freeze state. */
@@ -160,9 +235,10 @@ private:
     traj_duration_ = 0.0;
     exec_time_ = 0.0;
     closest_path_idx_ = 0;
+    path_progress_s_ = 0.0;
     safety_stop_active_ = safety_stop;
     publishExecutionFrozen(safety_stop_active_);
-    publishStop();
+    publishImmediateStop();
   }
 
   /** @brief Receives a new local B-spline. @param msg B-spline message. */
@@ -202,6 +278,7 @@ private:
     traj_frame_id_ = msg->header.frame_id;
     exec_time_ = 0.0;
     closest_path_idx_ = 0;
+    path_progress_s_ = 0.0;
     last_update_time_ = now();
     receive_traj_ = true;
     sampleControllerPath();
@@ -340,12 +417,19 @@ private:
     if (sampled_path_.empty())
       return 0;
 
-    const size_t search_back = 5;
+    const size_t search_back = 2;
     const size_t start_idx = closest_path_idx_ > search_back ? closest_path_idx_ - search_back : 0;
+    const double max_forward_search = std::max(1.0, 3.0 * lookahead_dist_);
     double best_dist = std::numeric_limits<double>::max();
     size_t best_idx = closest_path_idx_;
     for (size_t i = start_idx; i < sampled_path_.size(); ++i)
     {
+      if (i > closest_path_idx_ &&
+          sampled_arc_lengths_[i] - sampled_arc_lengths_[closest_path_idx_] >
+              max_forward_search)
+      {
+        break;
+      }
       const double dist = (sampled_path_[i].head<2>() - odom_pos_.head<2>()).squaredNorm();
       if (dist < best_dist)
       {
@@ -353,8 +437,38 @@ private:
         best_idx = i;
       }
     }
-    closest_path_idx_ = best_idx;
+    closest_path_idx_ = std::max(closest_path_idx_, best_idx);
+    path_progress_s_ = std::max(path_progress_s_, sampled_arc_lengths_[closest_path_idx_]);
     return closest_path_idx_;
+  }
+
+  /**
+   * @brief Interpolates a continuous point at an arc length on the sampled path.
+   * @param arc_length Requested path arc length in metres.
+   * @return Interpolated path position.
+   */
+  Eigen::Vector3d pointAtArcLength(double arc_length) const
+  {
+    if (sampled_path_.empty())
+      return Eigen::Vector3d::Zero();
+    if (arc_length <= 0.0 || sampled_path_.size() == 1)
+      return sampled_path_.front();
+    if (arc_length >= sampled_arc_lengths_.back())
+      return sampled_path_.back();
+
+    const auto upper = std::lower_bound(
+        sampled_arc_lengths_.begin(), sampled_arc_lengths_.end(), arc_length);
+    const size_t upper_idx =
+        static_cast<size_t>(std::distance(sampled_arc_lengths_.begin(), upper));
+    const size_t lower_idx = upper_idx - 1;
+    const double segment_length =
+        sampled_arc_lengths_[upper_idx] - sampled_arc_lengths_[lower_idx];
+    if (segment_length < 1.0e-9)
+      return sampled_path_[upper_idx];
+    const double ratio =
+        (arc_length - sampled_arc_lengths_[lower_idx]) / segment_length;
+    return sampled_path_[lower_idx] +
+        ratio * (sampled_path_[upper_idx] - sampled_path_[lower_idx]);
   }
 
   /** @brief Advances along sampled path by arc length. @param start_idx Starting sample index. @param distance Desired forward distance. @return Target sample index. */
@@ -394,7 +508,7 @@ private:
     command.angular.z = yaw_command;
   }
 
-  /** @brief Computes and publishes a pure-pursuit command. @param to_target_world Vector to lookahead target. @param tangent_world Reference tangent. @param speed Desired speed. */
+  /** @brief Computes a pure-pursuit command. @param to_target_world Vector to lookahead target. @param target_is_end Whether the target is the final sample. @param dist_to_end Distance to the local trajectory end. @param[out] command Raw body command. */
   void publishPurePursuitCommand(const Eigen::Vector2d &to_target_world,
                                  bool target_is_end,
                                  double dist_to_end,
@@ -418,7 +532,13 @@ private:
     }
     else
     {
-      yaw_rate = vx * 2.0 * local_y / (lookahead * lookahead);
+      const double filtered_local_y =
+          std::abs(local_y) < lateral_error_deadband_ ? 0.0 : local_y;
+      double curvature =
+          2.0 * filtered_local_y / (lookahead * lookahead);
+      if (std::abs(curvature) < curvature_deadband_)
+        curvature = 0.0;
+      yaw_rate = vx * curvature;
     }
 
     command.linear.x = std::clamp(vx, 0.0, max_vx_);
@@ -436,13 +556,19 @@ private:
     }
 
     const size_t closest_idx = findClosestPathIndex();
+    const double target_s = std::min(
+        sampled_arc_lengths_.back(), path_progress_s_ + lookahead_dist_);
+    const double yaw_target_s = std::min(
+        sampled_arc_lengths_.back(), path_progress_s_ + yaw_lookahead_dist_);
     const size_t target_idx = indexAtArcDistance(closest_idx, lookahead_dist_);
-    const size_t yaw_idx = indexAtArcDistance(closest_idx, yaw_lookahead_dist_);
-    const Eigen::Vector3d pos_des = sampled_path_[target_idx];
+    const Eigen::Vector3d pos_des = pointAtArcLength(target_s);
     publishControllerTarget(pos_des, current_time);
 
     Eigen::Vector2d to_target = pos_des.head<2>() - odom_pos_.head<2>();
-    Eigen::Vector2d path_dir = sampled_path_[yaw_idx].head<2>() - sampled_path_[closest_idx].head<2>();
+    const double tangent_back_s = std::max(0.0, path_progress_s_ - 0.15);
+    Eigen::Vector2d path_dir =
+        pointAtArcLength(yaw_target_s).head<2>() -
+        pointAtArcLength(tangent_back_s).head<2>();
     if (path_dir.squaredNorm() < 1e-4)
       path_dir = to_target;
     if (path_dir.squaredNorm() < 1e-4 && traj_.size() > 1)
@@ -450,12 +576,15 @@ private:
 
     const double desired_yaw = path_dir.squaredNorm() < 1e-4
         ? odom_yaw_ : std::atan2(path_dir.y(), path_dir.x());
-    const double yaw_error = normalizeAngle(desired_yaw - odom_yaw_);
-    const double yaw_command = std::clamp(kp_yaw_ * yaw_error, -max_vyaw_, max_vyaw_);
+    const double raw_yaw_error = normalizeAngle(desired_yaw - odom_yaw_);
+    const double yaw_error =
+        std::abs(raw_yaw_error) < heading_error_deadband_ ? 0.0 : raw_yaw_error;
+    const double yaw_command =
+        std::clamp(kp_yaw_ * yaw_error, -max_vyaw_, max_vyaw_);
     if (std::abs(yaw_error) > heading_error_threshold_)
     {
       publishExecutionFrozen(true);
-      publishStop(yaw_command);
+      publishYawOnly(yaw_command, dt);
       last_update_time_ = current_time;
       return;
     }
@@ -476,12 +605,15 @@ private:
       publishBodyCommand(vel_world, yaw_command, command);
     }
 
-    if (target_idx + 1 >= sampled_path_.size() && to_end.norm() < finish_dist_)
-      command = geometry_msgs::msg::Twist();
-
     exec_time_ = sampled_times_[closest_idx];
     last_update_time_ = current_time;
-    cmd_vel_pub_->publish(command);
+    if (target_idx + 1 >= sampled_path_.size() &&
+        to_end.norm() < finish_dist_)
+    {
+      publishImmediateStop();
+      return;
+    }
+    publishFilteredCommand(command, dt);
   }
 
   /** @brief Executes one time-parameterized tracking update. @param current_time Current ROS time. @param dt Controller period. */
@@ -490,12 +622,15 @@ private:
     const double t_eval = std::min(exec_time_, traj_duration_);
     Eigen::Vector3d pos_des = traj_[0].evaluateDeBoorT(t_eval);
     publishControllerTarget(pos_des, current_time);
-    const double yaw_error = normalizeAngle(estimateDesiredYaw(t_eval, pos_des) - odom_yaw_);
+    const double raw_yaw_error =
+        normalizeAngle(estimateDesiredYaw(t_eval, pos_des) - odom_yaw_);
+    const double yaw_error =
+        std::abs(raw_yaw_error) < heading_error_deadband_ ? 0.0 : raw_yaw_error;
     const double yaw_command = std::clamp(kp_yaw_ * yaw_error, -max_vyaw_, max_vyaw_);
     if (std::abs(yaw_error) > heading_error_threshold_)
     {
       publishExecutionFrozen(true);
-      publishStop(yaw_command);
+      publishYawOnly(yaw_command, dt);
       last_update_time_ = current_time;
       return;
     }
@@ -513,9 +648,13 @@ private:
 
     geometry_msgs::msg::Twist command;
     publishBodyCommand(vel_world, yaw_command, command);
-    if (exec_time_ >= traj_duration_ && pos_error.norm() < finish_dist_)
-      command = geometry_msgs::msg::Twist();
-    cmd_vel_pub_->publish(command);
+    if (exec_time_ >= traj_duration_ &&
+        pos_error.norm() < finish_dist_)
+    {
+      publishImmediateStop();
+      return;
+    }
+    publishFilteredCommand(command, dt);
   }
 
   /** @brief Periodic controller update and command publication callback. */
@@ -534,13 +673,13 @@ private:
     if (safety_stop_active_)
     {
       publishExecutionFrozen(true);
-      publishStop();
+      publishImmediateStop();
       return;
     }
     if (!receive_traj_ || !have_odom_)
     {
       publishExecutionFrozen(false);
-      publishStop();
+      publishImmediateStop();
       return;
     }
     double dt = (current_time - last_update_time_).seconds();
@@ -573,6 +712,7 @@ private:
   std::vector<double> sampled_times_;
   std::vector<double> sampled_arc_lengths_;
   size_t closest_path_idx_{0};
+  double path_progress_s_{0.0};
   Eigen::Vector3d odom_pos_{Eigen::Vector3d::Zero()};
   double odom_yaw_{0.0};
   double exec_time_{0.0};
@@ -582,6 +722,17 @@ private:
   double max_vx_, max_vy_, max_vyaw_, finish_dist_;
   double path_sample_dt_, lookahead_dist_, yaw_lookahead_dist_, min_path_speed_;
   double pure_pursuit_speed_{0.20};
+  double lateral_error_deadband_{0.04};
+  double heading_error_deadband_{0.035};
+  double curvature_deadband_{0.04};
+  double yaw_rate_deadband_{0.03};
+  double yaw_filter_time_constant_{0.20};
+  double max_yaw_acceleration_{1.0};
+  double yaw_reversal_threshold_{0.15};
+  double yaw_start_threshold_{0.12};
+  double yaw_stop_threshold_{0.06};
+  double min_nonzero_yaw_rate_{0.10};
+  YawCommandFilter yaw_command_filter_;
   double odom_timeout_{0.30};
   std::string expected_frame_id_;
 };

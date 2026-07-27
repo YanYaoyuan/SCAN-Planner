@@ -9,5 +9,6 @@ zsibot_cmd_udp_client:
     max_yaw_rate: 0.5
     deadband_vx: 0.05
     deadband_vy: 0.10
+    # SDK 仅接受 0 或 |yaw_rate| >= 0.1；小于 0.1 的命令直接归零，禁止向上放大。
     deadband_yaw_rate: 0.10
     status_log_period: 2.0
