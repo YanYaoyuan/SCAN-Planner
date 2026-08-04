@@ -1,0 +1,27 @@
+zsibot_cmd_bridge:
+  ros__parameters:
+    # MATRiX runs the motion controller on the same host in the usual
+    # simulation setup. local_port must match matrix/src/robot_mc/.../sdk_config.yaml.
+    local_ip: "127.0.0.1"
+    dog_ip: "127.0.0.1"
+    local_port: 43988
+    publish_rate: 50.0
+    cmd_timeout: 0.3
+    max_vx: 0.25
+    max_vy: 0.10
+    max_yaw_rate: 0.5
+    deadband_vx: 0.05
+    deadband_vy: 0.10
+    deadband_yaw_rate: 0.10
+    # Pure simulation mode: call standUp once to satisfy the SDK command-state
+    # machine, but do not block move() on hardware ctrlmode states (1/3). The
+    # keyboard-started MATRiX MC can report NORMAL/RL_MIX instead.
+    auto_stand: true
+    require_standing_before_move: false
+    standup_check_period: 0.2
+    standup_retry_period: 1.0
+    standup_wait_timeout: 10.0
+    send_zero_on_start: true
+    require_connection: false
+    log_sdk_status: true
+    status_log_period: 2.0

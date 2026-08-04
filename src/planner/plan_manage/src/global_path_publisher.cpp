@@ -12,6 +12,8 @@
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
+#include <rcl_interfaces/msg/parameter_type.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <tf2/LinearMath/Quaternion.h>
@@ -36,8 +38,12 @@ public:
     path_spacing_ = declare_parameter<double>("path_spacing", 0.25);
     goal_transform_timeout_ =
         declare_parameter<double>("goal_transform_timeout", 0.2);
+    rcl_interfaces::msg::ParameterDescriptor waypoints_descriptor;
+    waypoints_descriptor.type =
+        rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE_ARRAY;
     configured_waypoints_ =
-        declare_parameter<std::vector<double>>("waypoints", {});
+        declare_parameter<std::vector<double>>(
+            "waypoints", std::vector<double>{}, waypoints_descriptor);
 
     if (frame_id_.empty() || body_frame_id_.empty())
       throw std::invalid_argument("frame_id and body_frame_id must not be empty");
