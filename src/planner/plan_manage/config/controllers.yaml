@@ -12,11 +12,23 @@ closed_loop_controller:
     # 0.8 rad 约 46 度。调小: 更保守，转正了才走; 调大: 更愿意边走边转。
     heading_error_threshold: 0.8
 
+    # ALIGN 退出阈值，必须小于进入阈值；双阈值避免 0.8rad 附近来回切换。
+    heading_error_exit_threshold: 0.45
+
+    # 从该航向误差开始连续降低前向速度，到 ALIGN 进入阈值时降为 0。
+    heading_slowdown_start: 0.20
+
     # 位置误差比例增益。omni 模式下作用更明显；pure_pursuit 模式主要用前视几何算 yaw。
     kp_pos: 0.8
 
     # 航向误差比例增益。越大越快打角速度，也更容易碰到 max_vyaw 限幅。
     kp_yaw: 1.5
+
+    # Pure Pursuit 的 ALIGN 最大原地转向增益，以及 TRACK 路径切线航向反馈增益。
+    # ALIGN 接近退出阈值时会连续过渡到 TRACK 增益，避免状态切换角速度跳变。
+    # TRACK 增益应明显小于 ALIGN，避免和 Pure Pursuit 前馈重复纠偏。
+    align_heading_gain: 0.80
+    pp_heading_gain: 0.35
 
     # 控制器输出限幅，单位分别为 m/s、m/s、rad/s。
     # 真机最终还会再经过 zsibot bridge 限幅。首次测试建议 vx 0.15~0.25, vy 不依赖。
@@ -74,30 +86,72 @@ closed_loop_controller:
     # Pure Pursuit 曲率绝对值小于该值时按直线处理，单位 1/m。
     curvature_deadband: 0.04
 
+    # 舒适性曲率限速 v=max_vx/(1+gain*|kappa|)。越大，弯道越慢。
+    curvature_speed_gain: 0.60
+
+    # 为航向反馈/滤波预留的角速度余量，避免日常运行依赖最终 clamp。
+    yaw_rate_reserve: 0.03
+
+    # 最大允许横向加速度，以及正常线速度加速/减速上限。
+    max_lateral_acceleration: 0.20
+    max_linear_acceleration: 0.35
+    max_linear_deceleration: 0.60
+
     # 控制器原始角速度死区，单位 rad/s。它位于平滑器输入端。
-    yaw_rate_deadband: 0.03
+    yaw_rate_deadband: 0.025
 
     # 一阶低通滤波时间常数，单位 s。越大越平滑，但进入弯道时响应越慢。
-    yaw_filter_time_constant: 0.20
+    yaw_filter_time_constant: 0.12
 
-    # 最大角加速度，单位 rad/s^2。限制相邻控制周期的角速度变化。
+    # 最大角加速度，单位 rad/s^2。约束内部连续滤波状态。
+    # SDK 只接受 0 或 |yaw|>=0.1，所以最终 0<->0.1 的量化跳变是物理接口例外。
     max_yaw_acceleration: 1.0
 
     # 小于该幅值的反向角速度不能让输出直接换符号，而是先衰减到零。
     # 单位 rad/s，必须不小于 yaw_rate_deadband。
-    yaw_reversal_threshold: 0.15
+    yaw_reversal_threshold: 0.12
 
-    # 轮足底盘转向滞回：滤波角速度达到 start 才开始转，降到 stop 才停止。
-    # 这样零附近的小误差不会让实际角速度反复切换正负。
-    yaw_start_threshold: 0.12
-    yaw_stop_threshold: 0.06
+    # 轮足底盘转向滞回：raw 目标达到 start 才开始转，滤波状态降到 stop
+    # 才停止。这样零附近的小误差不会让实际角速度反复切换正负。
+    # start 由去死区后的 raw 目标触发，而不是等待低通状态渐近到阈值；
+    # 因此 raw 恰等 start 时也能在有限周期内启动。0.06 可覆盖持续缓弯。
+    yaw_start_threshold: 0.06
+    yaw_stop_threshold: 0.03
 
     # 机器狗接口要求非零 yaw_rate 的绝对值至少为 0.1 rad/s。
     # 控制器最终只会输出 0 或绝对值不小于此值的角速度。
     min_nonzero_yaw_rate: 0.10
 
+    # 与 zsibot bridge 的 deadband_vx 对齐。Pure Pursuit 最终只发布 0 或
+    # >=该值的前向速度，避免控制器缓起步阶段被桥接层静默吞掉。
+    min_nonzero_linear_speed: 0.05
+
+    # 实际启动角速度达到该值时，先预热 yaw 再和最小线速度同步放行。
+    # 默认与 SDK 最小非零 yaw 对齐；通常不建议高于 min_nonzero_yaw_rate。
+    yaw_sync_threshold: 0.10
+
+    # 急弯启动时，滤波 yaw 至少达到真实启动 yaw 的该比例才允许前进。
+    launch_yaw_readiness_ratio: 0.85
+
     # 超过该时间没有收到合法 body_pose，立即清除轨迹并持续发布零速度。
     odom_timeout: 0.30
+
+    # 规划器以 20Hz 发布带 traj_id+start_time 的实时心跳。超时、禁止运动或
+    # 身份不匹配时控制器立即清零；计时使用本机 steady clock。
+    planner_heartbeat_timeout: 0.40
+
+    # 控制周期与真机 bridge 的 50Hz 下发频率一致，减少量化命令被跨频采样。
+    control_rate: 50.0
+
+    # B-spline 入口资源上限，防止畸形消息触发越界或超大采样循环。
+    max_bspline_duration: 60.0
+    max_bspline_control_points: 1000
+
+    # 控制器空间投影的防跳参数；FSM 中有同名语义参数并保持一致。
+    local_progress_max_advance: 0.75
+    local_progress_movement_scale: 1.5
+    local_progress_movement_deadband: 0.01
+    local_progress_initial_credit: 0.15
 
     # 真机由 launch 覆盖成 lio_map；留空时跟随收到的轨迹/里程计 frame。
     expected_frame_id: ""

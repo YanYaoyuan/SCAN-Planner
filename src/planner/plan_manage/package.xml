@@ -10,6 +10,7 @@
   <depend>ament_index_cpp</depend>
   <exec_depend>ament_index_python</exec_depend>
   <depend>bspline_opt</depend>
+  <depend>builtin_interfaces</depend>
   <depend>eigen</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>

@@ -4,7 +4,9 @@
 
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 namespace scan_planner
@@ -258,7 +260,10 @@ namespace scan_planner
       {
 
         double t;
-        double t_cur = (node_->now() - local_data_.start_time_).seconds();
+        // 局部轨迹的执行进度由 FSM 根据真实 odom 空间投影更新，禁止在
+        // 规划器内部重新使用墙钟时间，否则机器人落后时会跳过未执行路径。
+        double t_cur = std::clamp(
+            local_data_.progress_time_, 0.0, local_data_.duration_);
 
         vector<double> pseudo_arc_length;
         vector<Eigen::Vector3d> segment_point;
@@ -295,6 +300,21 @@ namespace scan_planner
               return false;
             }
           }
+        }
+
+        if (segment_point.size() < 2 ||
+            pseudo_arc_length.size() != segment_point.size() ||
+            !std::isfinite(pseudo_arc_length.back()) ||
+            pseudo_arc_length.back() <= 1.0e-6)
+        {
+          // 旧轨迹已经到末端或剩余段退化时，下面的 size()-2 会下溢，
+          // 零弧长还会让“至少 7 点”循环永不结束。强制回退到多项式初始化。
+          RCLCPP_WARN(
+              node_->get_logger(),
+              "Previous-trajectory seed is degenerate; falling back to polynomial initialization");
+          flag_force_polynomial = true;
+          flag_regenerate = true;
+          continue;
         }
 
         double sample_length = 0;
@@ -593,6 +613,8 @@ namespace scan_planner
     local_data_.acceleration_traj_ = local_data_.velocity_traj_.getDerivative();
     local_data_.start_pos_ = local_data_.position_traj_.evaluateDeBoorT(0.0);
     local_data_.duration_ = local_data_.position_traj_.getTimeSum();
+    local_data_.progress_time_ = 0.0;
+    local_data_.progress_arc_length_ = 0.0;
     local_data_.traj_id_ += 1;
   }
 

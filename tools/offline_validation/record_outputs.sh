@@ -11,14 +11,17 @@ Record Planner outputs. With no topics, records the standard validation set.
 Environment overrides:
   OUTPUT_BAG    default: /tmp/scanplanner_offline_outputs_YYYYmmdd_HHMMSS
   ROS_DOMAIN_ID default: 73
+  CLOUD_TOPIC   default: /cloud_registered_global
+  BODY_ODOM_TOPIC default: /body_state_estimation_global
 EOF
   exit 0
 fi
 source "${SCRIPT_DIR}/common.sh"
 
 OUTPUT_BAG="${OUTPUT_BAG:-/tmp/scanplanner_offline_outputs_$(date +%Y%m%d_%H%M%S)}"
-BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation}"
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation_global}"
 CMD_VEL_TOPIC="${CMD_VEL_TOPIC:-/scan_planner/cmd_vel}"
+CLOUD_TOPIC="${CLOUD_TOPIC:-/cloud_registered_global}"
 
 if [[ -e "${OUTPUT_BAG}" ]]; then
   echo "ERROR: output bag already exists: ${OUTPUT_BAG}" >&2
@@ -27,6 +30,7 @@ fi
 
 topics=(
   /planning/bspline
+  /planning/planner_heartbeat
   /planning/controller_bspline
   /planning/controller_target
   /optimal_list
@@ -40,6 +44,7 @@ topics=(
   "${BODY_ODOM_TOPIC}"
   "${CMD_VEL_TOPIC}"
   /planning/go2_execution_frozen
+  "${CLOUD_TOPIC}"
 )
 
 if [[ $# -gt 0 ]]; then

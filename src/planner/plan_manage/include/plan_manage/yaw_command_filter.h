@@ -29,8 +29,8 @@ public:
     double time_constant{0.20};        ///< First-order low-pass time constant in seconds.
     double max_acceleration{1.0};      ///< Maximum yaw-rate change in rad/s^2.
     double reversal_threshold{0.15};   ///< Opposite commands below this magnitude first decay to zero.
-    double start_threshold{0.12};      ///< Filtered magnitude required to start turning.
-    double stop_threshold{0.06};       ///< Filtered magnitude below which turning stops.
+    double start_threshold{0.06};      ///< Raw target magnitude required to start turning.
+    double stop_threshold{0.03};       ///< Filtered magnitude below which turning stops.
     double min_nonzero_output{0.10};   ///< Smallest non-zero command accepted by the robot.
   };
 
@@ -109,6 +109,7 @@ public:
     if (target == 0.0 && std::abs(filtered_output_) < zero_threshold)
       filtered_output_ = 0.0;
 
+    const int target_sign = (target > 0.0) - (target < 0.0);
     const int filtered_sign =
         (filtered_output_ > 0.0) - (filtered_output_ < 0.0);
     bool exited_turning = false;
@@ -121,9 +122,12 @@ public:
       exited_turning = true;
     }
     if (!turning_ && !exited_turning &&
-        std::abs(filtered_output_) >= config_.start_threshold &&
-        filtered_sign != 0)
+        std::abs(target) >= config_.start_threshold &&
+        target_sign != 0 && filtered_sign == target_sign)
     {
+      // 启动条件看去死区后的原始目标，而不是等待一阶低通状态达到同一
+      // 阈值。否则 raw 恰等 start_threshold 时，filtered 只会从下方渐近
+      // 逼近，可能永远不启动，外层控制器也就可能永久停车。
       turning_ = true;
       turning_sign_ = filtered_sign;
     }

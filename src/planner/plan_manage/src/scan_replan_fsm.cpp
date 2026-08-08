@@ -3,6 +3,8 @@
 /** @file scan_replan_fsm.cpp @brief Implements replanning modes and safety-state transitions. */
 
 #include <plan_manage/scan_replan_fsm.h>
+#include <plan_manage/pure_pursuit_recovery_sweep.h>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <tf2/exceptions.h>
@@ -104,6 +106,129 @@ namespace scan_planner
             reference_progress_initial_credit_,
             reference_departure_distance_});
     odom_timeout_ = std::max(0.05, load_parameter<double>(node_, "fsm.odom_timeout", 0.3));
+    local_progress_sample_dt_ = std::clamp(
+        load_parameter<double>(node_, "fsm.local_progress_sample_dt", 0.05),
+        0.01,
+        0.20);
+    local_progress_max_advance_ = std::max(
+        0.10,
+        load_parameter<double>(node_, "fsm.local_progress_max_advance", 0.75));
+    local_progress_movement_scale_ = std::max(
+        1.0,
+        load_parameter<double>(node_, "fsm.local_progress_movement_scale", 1.5));
+    local_progress_movement_deadband_ = std::max(
+        0.0,
+        load_parameter<double>(node_, "fsm.local_progress_movement_deadband", 0.01));
+    local_progress_initial_credit_ = std::max(
+        0.0,
+        load_parameter<double>(node_, "fsm.local_progress_initial_credit", 0.15));
+    local_progress_collision_backtrack_ = std::max(
+        0.0,
+        load_parameter<double>(node_, "fsm.local_progress_collision_backtrack", 0.10));
+    local_progress_max_cross_track_ = std::max(
+        0.10,
+        load_parameter<double>(node_, "fsm.local_progress_max_cross_track", 0.40));
+    local_recovery_check_min_cross_track_ = std::clamp(
+        load_parameter<double>(node_, "fsm.local_recovery_check_min_cross_track", 0.05),
+        0.0,
+        local_progress_max_cross_track_);
+    local_recovery_lookahead_ = std::max(
+        0.10,
+        load_parameter<double>(node_, "fsm.local_recovery_lookahead", 0.45));
+    local_recovery_yaw_lookahead_ = std::max(
+        0.10,
+        load_parameter<double>(node_, "fsm.local_recovery_yaw_lookahead", 0.55));
+    local_recovery_sample_distance_ = std::clamp(
+        load_parameter<double>(node_, "fsm.local_recovery_sample_distance", 0.05),
+        0.02,
+        0.10);
+    if (local_recovery_sample_distance_ < 0.05)
+    {
+      RCLCPP_WARN(
+          node_->get_logger(),
+          "fsm.local_recovery_sample_distance=%.3f is below the real-robot "
+          "recommendation 0.05m; extreme cross-track recovery may exceed the "
+          "bounded sweep budget and fail closed",
+          local_recovery_sample_distance_);
+    }
+
+    // 这些默认值与 controllers.yaml 的 PathTrackingController 和
+    // PathCommandGovernor 一一对应。两个 ROS 节点无法共享有状态对象，FSM
+    // 因此读取同一组几何/底盘边界，构造实际可发布命令的保守碰撞包络。
+    local_recovery_control_limits_.heading_feedback_gain = std::max(
+        0.0,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_heading_feedback_gain", 0.35));
+    local_recovery_control_limits_.align_yaw_gain = std::max(
+        0.0,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_align_yaw_gain", 0.80));
+    local_recovery_control_limits_.align_enter_error = std::max(
+        0.05,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_align_enter_error", 0.80));
+    local_recovery_control_limits_.align_exit_error = std::clamp(
+        load_parameter<double>(
+            node_, "fsm.local_recovery_align_exit_error", 0.45),
+        0.0,
+        local_recovery_control_limits_.align_enter_error - 1.0e-4);
+    local_recovery_control_limits_.lateral_error_deadband = std::max(
+        0.0,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_lateral_error_deadband", 0.04));
+    local_recovery_control_limits_.heading_error_deadband = std::max(
+        0.0,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_heading_error_deadband", 0.035));
+    local_recovery_control_limits_.curvature_deadband = std::max(
+        0.0,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_curvature_deadband", 0.04));
+    local_recovery_control_limits_.minimum_lookahead = std::max(
+        0.01,
+        load_parameter<double>(
+            node_, "fsm.local_recovery_minimum_lookahead", 0.05));
+    local_recovery_control_limits_.min_forward_speed = std::clamp(
+        load_parameter<double>(
+            node_, "fsm.local_recovery_min_forward_speed", 0.05),
+        0.001,
+        1.0);
+    local_recovery_control_limits_.max_yaw_rate = std::clamp(
+        load_parameter<double>(
+            node_, "fsm.local_recovery_max_yaw_rate", 0.50),
+        0.01,
+        2.0);
+    local_recovery_control_limits_.yaw_deadband = std::clamp(
+        load_parameter<double>(
+            node_, "fsm.local_recovery_yaw_deadband", 0.025),
+        0.0,
+        local_recovery_control_limits_.max_yaw_rate);
+    local_recovery_control_limits_.yaw_start_threshold = std::clamp(
+        load_parameter<double>(
+            node_, "fsm.local_recovery_yaw_start_threshold", 0.06),
+        local_recovery_control_limits_.yaw_deadband,
+        local_recovery_control_limits_.max_yaw_rate);
+    local_recovery_control_limits_.min_yaw_rate = std::clamp(
+        load_parameter<double>(
+            node_, "fsm.local_recovery_min_yaw_rate", 0.10),
+        0.0,
+        local_recovery_control_limits_.max_yaw_rate);
+    local_finish_distance_ = std::max(
+        0.05,
+        load_parameter<double>(node_, "fsm.local_finish_distance", 0.15));
+    local_finish_remaining_length_ = std::max(
+        0.05,
+        load_parameter<double>(node_, "fsm.local_finish_remaining_length", 0.18));
+    local_finish_speed_ = std::clamp(
+        load_parameter<double>(node_, "fsm.local_finish_speed", 0.06),
+        0.0,
+        0.50);
+    local_trajectory_tracker_.setConfig(
+        LocalTrajectoryTracker::Config{
+            local_progress_max_advance_,
+            local_progress_movement_scale_,
+            local_progress_movement_deadband_,
+            local_progress_initial_credit_});
     self_inflation_frame_id_ = load_parameter<std::string>(node_, "grid_map.frame_id", "world");
     expected_odom_frame_ =
         load_parameter<std::string>(node_, "fsm.expected_odom_frame", self_inflation_frame_id_);
@@ -134,10 +259,6 @@ namespace scan_planner
     planner_manager_->initPlanModules(node_, visualization_);
 
     /* callback */
-    exec_timer_ = node_->create_wall_timer(std::chrono::milliseconds(10),
-                                           std::bind(&SCANReplanFSM::execFSMCallback, this));
-    safety_timer_ = node_->create_wall_timer(std::chrono::milliseconds(50),
-                                             std::bind(&SCANReplanFSM::checkCollisionCallback, this));
     odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
         "body_pose", rclcpp::SensorDataQoS(),
         std::bind(&SCANReplanFSM::odometryCallback, this, std::placeholders::_1));
@@ -146,10 +267,22 @@ namespace scan_planner
         std::bind(&SCANReplanFSM::go2ExecutionFrozenCallback, this, std::placeholders::_1));
 
     bspline_pub_ = node_->create_publisher<scan_planner_msgs::msg::Bspline>(
-        "planning/bspline", rclcpp::QoS(20).reliable().transient_local());
+        "planning/bspline", rclcpp::QoS(1).reliable().transient_local());
+    planner_heartbeat_pub_ =
+        node_->create_publisher<scan_planner_msgs::msg::PlannerHeartbeat>(
+            "planning/planner_heartbeat",
+            rclcpp::QoS(1).reliable().durability_volatile());
     data_disp_pub_ = node_->create_publisher<scan_planner_msgs::msg::DataDisp>("planning/data_display", 100);
     self_inflation_pub_ = node_->create_publisher<visualization_msgs::msg::Marker>(
         "self_inflation", rclcpp::QoS(1).reliable().transient_local());
+
+    exec_timer_ = node_->create_wall_timer(std::chrono::milliseconds(10),
+                                           std::bind(&SCANReplanFSM::execFSMCallback, this));
+    safety_timer_ = node_->create_wall_timer(std::chrono::milliseconds(50),
+                                             std::bind(&SCANReplanFSM::checkCollisionCallback, this));
+    heartbeat_timer_ = node_->create_wall_timer(
+        std::chrono::milliseconds(50),
+        std::bind(&SCANReplanFSM::publishPlannerHeartbeat, this));
 
     if (navi_mode_ == NAVI_MODE::MANUAL_TARGET)
       goal_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -741,6 +874,14 @@ namespace scan_planner
     odom_orient_.normalize();
 
     have_odom_ = true;
+    if (local_progress_traj_id_ == planner_manager_->local_data_.traj_id_ &&
+        local_trajectory_tracker_.active())
+    {
+      planner_manager_->local_data_.progress_arc_length_ =
+          local_trajectory_tracker_.update(odom_pos_);
+      planner_manager_->local_data_.progress_time_ =
+          local_trajectory_tracker_.progressTime();
+    }
     if (navi_mode_ == NAVI_MODE::REFERENCE_PATH &&
         reference_path_active_ &&
         reference_path_tracker_.active())
@@ -770,16 +911,170 @@ namespace scan_planner
 
   void SCANReplanFSM::updateLocalTrajTimeFreeze()
   {
-    const rclcpp::Time now = node_->now();
-    double dt = (now - last_freeze_update_time_).seconds();
-    last_freeze_update_time_ = now;
+    // 真实进度由 odom 在局部轨迹上的空间投影决定。ALIGN 时机器人不移动，
+    // 投影进度会自然冻结，因此绝不能再平移 start_time_。start_time_ 也是
+    // planner heartbeat 的轨迹身份之一，修改它会让控制器拒绝合法心跳。
+    last_freeze_update_time_ = node_->now();
+  }
 
-    if (dt <= 0.0 || dt > 0.2)
+  bool SCANReplanFSM::resetLocalTrajectoryProgress()
+  {
+    LocalTrajData *info = &planner_manager_->local_data_;
+    local_trajectory_tracker_.clear();
+    local_progress_traj_id_ = -1;
+    info->progress_time_ = 0.0;
+    info->progress_arc_length_ = 0.0;
+
+    if (!std::isfinite(info->duration_) || info->duration_ <= 1.0e-6)
+      return false;
+
+    const int sample_count = std::max(
+        2,
+        static_cast<int>(std::ceil(
+            info->duration_ / local_progress_sample_dt_)) + 1);
+    if (sample_count > 10000)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Local trajectory %d requires too many progress samples: %d",
+          info->traj_id_, sample_count);
+      return false;
+    }
+
+    std::vector<Eigen::Vector3d> points;
+    std::vector<double> times;
+    points.reserve(sample_count);
+    times.reserve(sample_count);
+    double planar_length = 0.0;
+    for (int index = 0; index < sample_count; ++index)
+    {
+      const double time = info->duration_ * static_cast<double>(index) /
+          static_cast<double>(sample_count - 1);
+      const Eigen::Vector3d point =
+          info->position_traj_.evaluateDeBoorT(time);
+      if (!point.allFinite())
+      {
+        RCLCPP_ERROR(
+            node_->get_logger(),
+            "Local trajectory %d produced a non-finite progress sample",
+            info->traj_id_);
+        return false;
+      }
+      if (!points.empty())
+        planar_length += (point.head<2>() - points.back().head<2>()).norm();
+      points.push_back(point);
+      times.push_back(time);
+    }
+
+    local_progress_traj_id_ = info->traj_id_;
+    if (planar_length <= 1.0e-8)
+    {
+      // 急停轨迹可能是合法的原地保持 B-spline，没有可投影的平面弧长。
+      info->progress_time_ = info->duration_;
+      return true;
+    }
+
+    try
+    {
+      local_trajectory_tracker_.reset(
+          points,
+          times,
+          have_odom_ ? odom_pos_ : points.front());
+    }
+    catch (const std::invalid_argument &error)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Unable to initialize local trajectory progress: %s",
+          error.what());
+      local_progress_traj_id_ = -1;
+      return false;
+    }
+    return true;
+  }
+
+  double SCANReplanFSM::currentLocalTrajectoryTime()
+  {
+    LocalTrajData *info = &planner_manager_->local_data_;
+    if (local_progress_traj_id_ != info->traj_id_)
+      return 0.0;
+
+    if (local_trajectory_tracker_.active() && have_odom_)
+    {
+      info->progress_arc_length_ =
+          local_trajectory_tracker_.update(odom_pos_);
+      info->progress_time_ = local_trajectory_tracker_.progressTime();
+    }
+    return std::clamp(info->progress_time_, 0.0, info->duration_);
+  }
+
+  double SCANReplanFSM::localCollisionScanStartTime(double progress_time) const
+  {
+    if (!local_trajectory_tracker_.active())
+      return std::max(0.0, progress_time);
+    const double scan_start_arc = std::max(
+        0.0,
+        local_trajectory_tracker_.progress() -
+            local_progress_collision_backtrack_);
+    return local_trajectory_tracker_.timeAt(scan_start_arc);
+  }
+
+  bool SCANReplanFSM::localTrajectoryComplete() const
+  {
+    const LocalTrajData *info = &planner_manager_->local_data_;
+    if (!have_odom_ || info->duration_ <= 1.0e-6)
+      return false;
+    const Eigen::Vector3d endpoint =
+        info->position_traj_.evaluateDeBoorT(info->duration_);
+    const double endpoint_distance =
+        (endpoint.head<2>() - odom_pos_.head<2>()).norm();
+    const double remaining = local_trajectory_tracker_.active()
+        ? local_trajectory_tracker_.remainingLength()
+        : 0.0;
+    // 距离与空间进度满足时，控制器可能仍在执行正常制动。必须等实测
+    // 平面速度降到阈值后再切状态/清轨迹，避免把舒适减速变成立即急停。
+    const double planar_speed = odom_vel_.head<2>().norm();
+    return endpoint_distance <= local_finish_distance_ &&
+        remaining <= local_finish_remaining_length_ &&
+        planar_speed <= local_finish_speed_;
+  }
+
+  void SCANReplanFSM::publishPlannerHeartbeat()
+  {
+    if (!planner_heartbeat_pub_ || !planner_manager_)
       return;
 
-    LocalTrajData *info = &planner_manager_->local_data_;
-    if (go2_execution_frozen_ && info->start_time_.seconds() > 1e-5)
-      info->start_time_ += rclcpp::Duration::from_seconds(dt);
+    const LocalTrajData &info = planner_manager_->local_data_;
+    const bool state_allows_motion =
+        exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ;
+    const bool trajectory_valid =
+        info.traj_id_ > 0 && std::isfinite(info.duration_) &&
+        info.duration_ > 1.0e-6 &&
+        std::isfinite(info.progress_time_) && info.progress_time_ >= 0.0 &&
+        std::isfinite(info.progress_arc_length_) &&
+        info.progress_arc_length_ >= 0.0 &&
+        local_progress_traj_id_ == info.traj_id_;
+
+    scan_planner_msgs::msg::PlannerHeartbeat heartbeat;
+    heartbeat.header.stamp = node_->now();
+    heartbeat.header.frame_id = self_inflation_frame_id_;
+    heartbeat.motion_allowed = state_allows_motion && trajectory_valid;
+    heartbeat.traj_id = heartbeat.motion_allowed ? info.traj_id_ : -1;
+    if (heartbeat.motion_allowed)
+    {
+      heartbeat.trajectory_start_time = info.start_time_;
+      heartbeat.progress_time = std::clamp(
+          info.progress_time_, 0.0, info.duration_);
+      heartbeat.progress_arc_length = std::max(
+          0.0, info.progress_arc_length_);
+    }
+    else
+    {
+      heartbeat.trajectory_start_time = heartbeat.header.stamp;
+      heartbeat.progress_time = 0.0;
+      heartbeat.progress_arc_length = 0.0;
+    }
+    planner_heartbeat_pub_->publish(heartbeat);
   }
 
   double SCANReplanFSM::getOdomYaw() const
@@ -853,8 +1148,21 @@ namespace scan_planner
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
     cout << "[" + pos_call + "]: from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
+    if (new_state == EMERGENCY_STOP && pre_s != int(EMERGENCY_STOP))
+    {
+      // 先撤销旧轨迹身份和运动授权。EMERGENCY_STOP 中即使发布原地保持
+      // B-spline 也不恢复授权，只有成功生成新的可执行轨迹后才会重新开放。
+      local_trajectory_tracker_.clear();
+      local_progress_traj_id_ = -1;
+    }
     if (new_state == WAIT_TARGET && pre_s != int(WAIT_TARGET))
       publishTrajectoryClear(pos_call);
+    else if (pre_s != int(new_state))
+    {
+      // 状态切换必须立即同步运动授权。尤其进入 GEN_NEW_TRAJ 后优化器可能
+      // 在单线程 executor 中运行数百毫秒，不能等 20Hz 定时器才撤销旧授权。
+      publishPlannerHeartbeat();
+    }
   }
 
   std::pair<int, SCANReplanFSM::FSM_EXEC_STATE> SCANReplanFSM::timesOfConsecutiveStateCalls()
@@ -987,9 +1295,15 @@ namespace scan_planner
     {
       /* determine if need to replan */
       LocalTrajData *info = &planner_manager_->local_data_;
-      rclcpp::Time time_now = node_->now();
-      double t_cur = (time_now - info->start_time_).seconds();
-      t_cur = min(info->duration_, t_cur);
+      if (local_progress_traj_id_ != info->traj_id_)
+      {
+        RCLCPP_ERROR(
+            node_->get_logger(),
+            "Active trajectory lost its spatial-progress identity; entering emergency stop");
+        changeFSMExecState(EMERGENCY_STOP, "PROGRESS");
+        return;
+      }
+      const double t_cur = currentLocalTrajectoryTime();
 
       Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
 
@@ -1009,7 +1323,7 @@ namespace scan_planner
       }
 
       /* && (end_pt_ - pos).norm() < 0.5 */
-      if (t_cur > info->duration_ - 1e-2)
+      if (localTrajectoryComplete())
       {
         if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && reference_path_active_)
         {
@@ -1130,6 +1444,11 @@ namespace scan_planner
     bspline.traj_id = -1;
     bspline.start_time = bspline.header.stamp;
     bspline_pub_->publish(bspline);
+    local_trajectory_tracker_.clear();
+    local_progress_traj_id_ = -1;
+    planner_manager_->local_data_.progress_time_ = 0.0;
+    planner_manager_->local_data_.progress_arc_length_ = 0.0;
+    publishPlannerHeartbeat();
     RCLCPP_INFO(node_->get_logger(),
                 "Published empty B-spline to clear controller trajectory: %s",
                 reason.c_str());
@@ -1138,15 +1457,19 @@ namespace scan_planner
   bool SCANReplanFSM::planFromCurrentTraj()
   {
     LocalTrajData *info = &planner_manager_->local_data_;
-    rclcpp::Time time_now = node_->now();
-    double t_cur = (time_now - info->start_time_).seconds();
-    t_cur = std::min(std::max(t_cur, 0.0), info->duration_);
-
-    //cout << "info->velocity_traj_=" << info->velocity_traj_.get_control_points() << endl;
-
+    if (local_progress_traj_id_ != info->traj_id_)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Cannot replan from a trajectory without matching spatial progress");
+      return false;
+    }
+    // 重规划起点必须服从机器狗实测状态。原实现取规划轨迹导数；当规划速度
+    // 0.75m/s 而真机仅走 0.2m/s 时，会把并不存在的高速状态带进下一条轨迹。
+    // body_pose 没有可靠线加速度字段，因此从零加速度开始重新优化。
     start_pt_ = odom_pos_;
-    start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
-    start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
+    start_vel_ = odom_vel_;
+    start_acc_.setZero();
 
     const Eigen::Vector2d to_goal = end_pt_.head<2>() - odom_pos_.head<2>();
     if (navi_mode_ != NAVI_MODE::REFERENCE_PATH &&
@@ -1196,18 +1519,6 @@ namespace scan_planner
     start_vel_ = odom_vel_;
     start_acc_.setZero();
 
-    LocalTrajData *info = &planner_manager_->local_data_;
-    if (info->start_time_.seconds() < 1e-5 || info->duration_ <= 1e-5)
-      return;
-
-    const double raw_t_cur = (node_->now() - info->start_time_).seconds();
-    if (raw_t_cur < -1e-3 || raw_t_cur > info->duration_ + 0.2)
-      return;
-
-    const double t_cur = std::min(std::max(raw_t_cur, 0.0), info->duration_);
-    start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
-    start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
-
     const Eigen::Vector2d to_goal = end_pt_.head<2>() - odom_pos_.head<2>();
     if (navi_mode_ != NAVI_MODE::REFERENCE_PATH &&
         to_goal.norm() > 1e-3 &&
@@ -1225,43 +1536,136 @@ namespace scan_planner
     LocalTrajData *info = &planner_manager_->local_data_;
     auto map = planner_manager_->grid_map_;
 
-    if (exec_state_ == WAIT_TARGET || info->start_time_.seconds() < 1e-5)
+    // 只允许活动执行/重规划状态检查当前轨迹。INIT、GEN、WAIT、急停窗口
+    // 都不得由安全定时器复活旧轨迹或抢占 FSM 状态。
+    if (!have_odom_ ||
+        (exec_state_ != EXEC_TRAJ && exec_state_ != REPLAN_TRAJ) ||
+        local_progress_traj_id_ != info->traj_id_ ||
+        info->duration_ <= 1.0e-6)
       return;
 
     /* ---------- check trajectory ---------- */
     constexpr double time_step = 0.01;
-    double t_cur = (node_->now() - info->start_time_).seconds();
-    double t_2_3 = info->duration_ * 2 / 3;
-    for (double t = t_cur; t < info->duration_; t += time_step)
-    {
-      if (t_cur < t_2_3 && t >= t_2_3) // If t_cur < t_2_3, only the first 2/3 partition of the trajectory is considered valid and will get checked.
-        break;
+    const double t_cur = currentLocalTrajectoryTime();
 
-      Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t);
-      Eigen::Vector3d pos_next = info->position_traj_.evaluateDeBoorT(std::min(t + time_step, info->duration_));
+    if (local_trajectory_tracker_.active())
+    {
+      const double progress_s = local_trajectory_tracker_.progress();
+      const Eigen::Vector3d projection =
+          local_trajectory_tracker_.pointAt(progress_s);
+      const double cross_track_error =
+          (projection.head<2>() - odom_pos_.head<2>()).norm();
+      if (cross_track_error > local_progress_max_cross_track_)
+      {
+        RCLCPP_ERROR(
+            node_->get_logger(),
+            "Local trajectory cross-track error %.3fm exceeds %.3fm; stopping before replanning",
+            cross_track_error,
+            local_progress_max_cross_track_);
+        changeFSMExecState(EMERGENCY_STOP, "CROSS_TRACK");
+        return;
+      }
+
+      // 与 ClosedLoopController 使用同一个空间前视点，并用更远的 yaw 前视
+      // 点估计路径切线。这样碰撞模型同时覆盖 ALIGN 原地转向、TRACK 的
+      // kappa=2*y/L^2+heading_yaw/v，以及 SDK 线角速度死区造成的极值轨迹。
+      const double recovery_target_s = std::min(
+          local_trajectory_tracker_.totalLength(),
+          progress_s + local_recovery_lookahead_);
+      const double recovery_yaw_target_s = std::min(
+          local_trajectory_tracker_.totalLength(),
+          progress_s + local_recovery_yaw_lookahead_);
+      const Eigen::Vector3d recovery_target =
+          local_trajectory_tracker_.pointAt(recovery_target_s);
+      const double tangent_back_s = std::max(0.0, progress_s - 0.15);
+      Eigen::Vector2d path_direction =
+          local_trajectory_tracker_.pointAt(recovery_yaw_target_s).head<2>() -
+          local_trajectory_tracker_.pointAt(tangent_back_s).head<2>();
+      const Eigen::Vector2d to_recovery_target =
+          recovery_target.head<2>() - odom_pos_.head<2>();
+      if (path_direction.squaredNorm() < 1.0e-4)
+        path_direction = to_recovery_target;
+
+      const double odom_yaw = getOdomYaw();
+      const double desired_yaw = path_direction.squaredNorm() < 1.0e-4
+          ? odom_yaw
+          : std::atan2(path_direction.y(), path_direction.x());
+      RecoverySweepControlLimits recovery_control =
+          local_recovery_control_limits_;
+      recovery_control.heading_error = normalizeRecoveryAngle(
+          desired_yaw - odom_yaw);
+      const std::vector<RecoverySweepPose> recovery_sweep =
+          samplePurePursuitRecoverySweep(
+              odom_pos_,
+              odom_yaw,
+              recovery_target,
+              local_recovery_sample_distance_,
+              recovery_control);
+      if (recovery_sweep.empty())
+      {
+        // 空数组表示输入非有限、采样维度溢出或超过硬样本预算。安全检查
+        // 不能在这种情况下静默放行，必须撤销旧轨迹授权并原地停车。
+        RCLCPP_ERROR(
+            node_->get_logger(),
+            "Unable to build bounded Pure Pursuit swept region; stopping safely");
+        changeFSMExecState(EMERGENCY_STOP, "RECOVERY_SWEEP_INVALID");
+        return;
+      }
+      for (const RecoverySweepPose &sample : recovery_sweep)
+      {
+        if (map->getInflateOccupancy(sample.position, sample.yaw))
+        {
+          RCLCPP_WARN(
+              node_->get_logger(),
+              "Pure Pursuit %s swept region is occupied; stopping before replanning",
+              cross_track_error > local_recovery_check_min_cross_track_
+                  ? "off-path recovery"
+                  : "tracking");
+          changeFSMExecState(EMERGENCY_STOP, "RECOVERY_COLLISION");
+          return;
+        }
+      }
+    }
+
+    const double scan_start_t = localCollisionScanStartTime(t_cur);
+    const double t_2_3 = info->duration_ * 2 / 3;
+    const double scan_end_t = t_cur < t_2_3 ? t_2_3 : info->duration_;
+    for (double t = scan_start_t; ; t += time_step)
+    {
+      const double sample_t = std::min(t, scan_end_t);
+      Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(sample_t);
+      Eigen::Vector3d pos_next = info->position_traj_.evaluateDeBoorT(
+          std::min(sample_t + time_step, info->duration_));
       if (map->getInflateOccupancy(pos, estimateYawFromSegment(pos, pos_next)))
       {
-        if (planFromCurrentTraj()) // Make a chance
+        const double collision_time_ahead =
+            std::max(0.0, sample_t - t_cur);
+        if (collision_time_ahead < emergency_time_)
+        {
+          // 近场/已落入回退余量的障碍必须先撤销旧轨迹授权。不能先同步跑
+          // 优化器再决定停车，否则规划耗时内机器狗仍沿碰撞轨迹前进。
+          RCLCPP_WARN(
+              node_->get_logger(),
+              "Obstacle discovered; emergency stop in %.3fs of trajectory time",
+              collision_time_ahead);
+          changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+          return;
+        }
+
+        if (planFromCurrentTraj()) // 仅远场障碍允许边执行边重规划。
         {
           changeFSMExecState(EXEC_TRAJ, "SAFETY");
           return;
         }
-        else
-        {
-          if (t - t_cur < emergency_time_) // 0.8s of emergency time
-          {
-            RCLCPP_WARN(node_->get_logger(), "Obstacle discovered; emergency stop in %.3fs", t - t_cur);
-            changeFSMExecState(EMERGENCY_STOP, "SAFETY");
-          }
-          else
-          {
-            //ROS_WARN("current traj in collision, replan.");
-            changeFSMExecState(REPLAN_TRAJ, "SAFETY");
-          }
-          return;
-        }
-        break;
+
+        // 远场重规划失败，进入 REPLAN；若优化耗时超过 heartbeat timeout，
+        // 控制器会独立清零，绝不继续无限执行最后一条轨迹。
+        changeFSMExecState(REPLAN_TRAJ, "SAFETY");
+        return;
       }
+      // 明确采样分区端点；原来的 t<scan_end_t 会漏掉精确终点占用。
+      if (sample_t >= scan_end_t - 1.0e-9)
+        break;
     }
   }
 
@@ -1288,6 +1692,15 @@ namespace scan_planner
     {
 
       auto info = &planner_manager_->local_data_;
+      if (!resetLocalTrajectoryProgress())
+      {
+        RCLCPP_ERROR(
+            node_->get_logger(),
+            "Rejecting newly planned trajectory %d: unable to initialize spatial progress",
+            info->traj_id_);
+        publishTrajectoryClear("local progress initialization failed");
+        return false;
+      }
 
       /* publish traj */
       scan_planner_msgs::msg::Bspline bspline;
@@ -1316,6 +1729,7 @@ namespace scan_planner
       }
 
       bspline_pub_->publish(bspline);
+      publishPlannerHeartbeat();
 
       visualization_->displayOptimalTraj(info->position_traj_, 0);
     }
@@ -1329,6 +1743,11 @@ namespace scan_planner
     planner_manager_->EmergencyStop(stop_pos);
 
     auto info = &planner_manager_->local_data_;
+    if (!resetLocalTrajectoryProgress())
+    {
+      publishTrajectoryClear("emergency trajectory progress initialization failed");
+      return false;
+    }
 
     /* publish traj */
     scan_planner_msgs::msg::Bspline bspline;
@@ -1357,6 +1776,7 @@ namespace scan_planner
     }
 
     bspline_pub_->publish(bspline);
+    publishPlannerHeartbeat();
 
     return true;
   }

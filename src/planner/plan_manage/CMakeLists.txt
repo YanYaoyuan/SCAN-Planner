@@ -9,6 +9,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(bspline_opt REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -56,7 +57,7 @@ if(SCAN_PLANNER_LAPACK_LIBRARY AND SCAN_PLANNER_BLAS_LIBRARY)
 endif()
 
 set(scan_planner_dependencies
-  ament_index_cpp bspline_opt geometry_msgs nav_msgs path_searching plan_env
+  ament_index_cpp bspline_opt builtin_interfaces geometry_msgs nav_msgs path_searching plan_env
   rclcpp scan_planner_msgs sensor_msgs std_msgs tf2 tf2_geometry_msgs tf2_ros
   traj_utils visualization_msgs)
 
@@ -72,7 +73,7 @@ foreach(target open_loop_controller closed_loop_controller go2_kinematic_sim go2
   add_executable(${target} src/${target}.cpp)
   target_include_directories(${target} PRIVATE include)
   ament_target_dependencies(${target}
-    bspline_opt geometry_msgs nav_msgs rclcpp scan_planner_msgs sensor_msgs
+    bspline_opt builtin_interfaces geometry_msgs nav_msgs rclcpp scan_planner_msgs sensor_msgs
     std_msgs tf2 tf2_geometry_msgs tf2_ros)
   target_link_libraries(${target} Eigen3::Eigen)
 endforeach()
@@ -97,6 +98,29 @@ if(BUILD_TESTING)
   ament_add_gtest(test_yaw_command_filter
     test/test_yaw_command_filter.cpp)
   target_include_directories(test_yaw_command_filter PRIVATE include)
+  ament_add_gtest(test_local_trajectory_tracker
+    test/test_local_trajectory_tracker.cpp)
+  target_include_directories(test_local_trajectory_tracker PRIVATE include)
+  target_link_libraries(test_local_trajectory_tracker Eigen3::Eigen)
+  ament_add_gtest(test_pure_pursuit_recovery_sweep
+    test/test_pure_pursuit_recovery_sweep.cpp)
+  target_include_directories(test_pure_pursuit_recovery_sweep PRIVATE include)
+  target_link_libraries(test_pure_pursuit_recovery_sweep Eigen3::Eigen)
+  ament_add_gtest(test_path_tracking_controller
+    test/test_path_tracking_controller.cpp)
+  target_include_directories(test_path_tracking_controller PRIVATE include)
+  ament_add_gtest(test_path_command_governor
+    test/test_path_command_governor.cpp)
+  target_include_directories(test_path_command_governor PRIVATE include)
+  ament_add_gtest(test_bspline_message_validator
+    test/test_bspline_message_validator.cpp)
+  target_include_directories(test_bspline_message_validator PRIVATE include)
+  ament_target_dependencies(test_bspline_message_validator
+    geometry_msgs scan_planner_msgs std_msgs)
+  ament_add_gtest(test_planner_heartbeat_gate
+    test/test_planner_heartbeat_gate.cpp)
+  target_include_directories(test_planner_heartbeat_gate PRIVATE include)
+  ament_target_dependencies(test_planner_heartbeat_gate builtin_interfaces)
   add_launch_test(test/test_planner_startup.py TIMEOUT 30)
   add_launch_test(test/test_waypoint_parameters.py TIMEOUT 30)
 endif()

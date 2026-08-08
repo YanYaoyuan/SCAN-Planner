@@ -134,9 +134,19 @@ def _setup(context):
         ("controller_lookahead_dist", "lookahead_dist"),
         ("controller_yaw_lookahead_dist", "yaw_lookahead_dist"),
         ("controller_pure_pursuit_speed", "pure_pursuit_speed"),
+        ("controller_heading_error_threshold", "heading_error_threshold"),
+        ("controller_heading_error_exit_threshold", "heading_error_exit_threshold"),
+        ("controller_heading_slowdown_start", "heading_slowdown_start"),
+        ("controller_align_heading_gain", "align_heading_gain"),
+        ("controller_pp_heading_gain", "pp_heading_gain"),
         ("controller_lateral_error_deadband", "lateral_error_deadband"),
         ("controller_heading_error_deadband", "heading_error_deadband"),
         ("controller_curvature_deadband", "curvature_deadband"),
+        ("controller_curvature_speed_gain", "curvature_speed_gain"),
+        ("controller_yaw_rate_reserve", "yaw_rate_reserve"),
+        ("controller_max_lateral_acceleration", "max_lateral_acceleration"),
+        ("controller_max_linear_acceleration", "max_linear_acceleration"),
+        ("controller_max_linear_deceleration", "max_linear_deceleration"),
         ("controller_yaw_rate_deadband", "yaw_rate_deadband"),
         ("controller_yaw_filter_time_constant", "yaw_filter_time_constant"),
         ("controller_max_yaw_acceleration", "max_yaw_acceleration"),
@@ -144,6 +154,11 @@ def _setup(context):
         ("controller_yaw_start_threshold", "yaw_start_threshold"),
         ("controller_yaw_stop_threshold", "yaw_stop_threshold"),
         ("controller_min_nonzero_yaw_rate", "min_nonzero_yaw_rate"),
+        ("controller_min_nonzero_linear_speed", "min_nonzero_linear_speed"),
+        ("controller_yaw_sync_threshold", "yaw_sync_threshold"),
+        ("controller_launch_yaw_readiness_ratio", "launch_yaw_readiness_ratio"),
+        ("controller_planner_heartbeat_timeout", "planner_heartbeat_timeout"),
+        ("controller_control_rate", "control_rate"),
     ):
         _set_optional_float(context, closed_loop_overrides, launch_name, param_name)
     planner_overrides = {
@@ -162,6 +177,39 @@ def _setup(context):
         "fsm.goal_frame_id": goal_frame_id,
         "fsm.goal_transform_timeout": goal_transform_timeout,
     }
+    # FSM 的恢复碰撞包络必须与 closed-loop controller 使用同一组几何和
+    # 底盘死区。用户通过 controller_* 调真机参数时同步覆盖 FSM，避免只改
+    # 控制输出而安全预测仍沿用 YAML 旧值；YAML 仅作为无 launch override
+    # 时的默认兜底。
+    for launch_name, param_name in (
+        ("controller_lookahead_dist", "fsm.local_recovery_lookahead"),
+        ("controller_yaw_lookahead_dist", "fsm.local_recovery_yaw_lookahead"),
+        ("controller_heading_error_threshold", "fsm.local_recovery_align_enter_error"),
+        ("controller_heading_error_exit_threshold", "fsm.local_recovery_align_exit_error"),
+        ("controller_align_heading_gain", "fsm.local_recovery_align_yaw_gain"),
+        ("controller_pp_heading_gain", "fsm.local_recovery_heading_feedback_gain"),
+        ("controller_lateral_error_deadband", "fsm.local_recovery_lateral_error_deadband"),
+        ("controller_heading_error_deadband", "fsm.local_recovery_heading_error_deadband"),
+        ("controller_curvature_deadband", "fsm.local_recovery_curvature_deadband"),
+        ("controller_yaw_rate_deadband", "fsm.local_recovery_yaw_deadband"),
+        ("controller_yaw_start_threshold", "fsm.local_recovery_yaw_start_threshold"),
+        ("controller_min_nonzero_yaw_rate", "fsm.local_recovery_min_yaw_rate"),
+        ("controller_min_nonzero_linear_speed", "fsm.local_recovery_min_forward_speed"),
+        ("controller_max_vyaw", "fsm.local_recovery_max_yaw_rate"),
+    ):
+        _set_optional_float(context, planner_overrides, launch_name, param_name)
+    for launch_name, param_name in (
+        ("fsm_emergency_time", "fsm.emergency_time"),
+        ("fsm_local_progress_collision_backtrack", "fsm.local_progress_collision_backtrack"),
+        ("fsm_local_progress_max_cross_track", "fsm.local_progress_max_cross_track"),
+        ("fsm_local_recovery_check_min_cross_track", "fsm.local_recovery_check_min_cross_track"),
+        ("fsm_local_recovery_lookahead", "fsm.local_recovery_lookahead"),
+        ("fsm_local_recovery_sample_distance", "fsm.local_recovery_sample_distance"),
+        ("fsm_local_finish_speed", "fsm.local_finish_speed"),
+        ("manager_max_vel", "manager.max_vel"),
+        ("manager_max_acc", "manager.max_acc"),
+    ):
+        _set_optional_float(context, planner_overrides, launch_name, param_name)
     actions = []
 
     if is_real and use_global_path_publisher:
@@ -389,9 +437,19 @@ def generate_launch_description():
             DeclareLaunchArgument("controller_lookahead_dist", default_value=""),
             DeclareLaunchArgument("controller_yaw_lookahead_dist", default_value=""),
             DeclareLaunchArgument("controller_pure_pursuit_speed", default_value=""),
+            DeclareLaunchArgument("controller_heading_error_threshold", default_value=""),
+            DeclareLaunchArgument("controller_heading_error_exit_threshold", default_value=""),
+            DeclareLaunchArgument("controller_heading_slowdown_start", default_value=""),
+            DeclareLaunchArgument("controller_align_heading_gain", default_value=""),
+            DeclareLaunchArgument("controller_pp_heading_gain", default_value=""),
             DeclareLaunchArgument("controller_lateral_error_deadband", default_value=""),
             DeclareLaunchArgument("controller_heading_error_deadband", default_value=""),
             DeclareLaunchArgument("controller_curvature_deadband", default_value=""),
+            DeclareLaunchArgument("controller_curvature_speed_gain", default_value=""),
+            DeclareLaunchArgument("controller_yaw_rate_reserve", default_value=""),
+            DeclareLaunchArgument("controller_max_lateral_acceleration", default_value=""),
+            DeclareLaunchArgument("controller_max_linear_acceleration", default_value=""),
+            DeclareLaunchArgument("controller_max_linear_deceleration", default_value=""),
             DeclareLaunchArgument("controller_yaw_rate_deadband", default_value=""),
             DeclareLaunchArgument("controller_yaw_filter_time_constant", default_value=""),
             DeclareLaunchArgument("controller_max_yaw_acceleration", default_value=""),
@@ -399,6 +457,20 @@ def generate_launch_description():
             DeclareLaunchArgument("controller_yaw_start_threshold", default_value=""),
             DeclareLaunchArgument("controller_yaw_stop_threshold", default_value=""),
             DeclareLaunchArgument("controller_min_nonzero_yaw_rate", default_value=""),
+            DeclareLaunchArgument("controller_min_nonzero_linear_speed", default_value=""),
+            DeclareLaunchArgument("controller_yaw_sync_threshold", default_value=""),
+            DeclareLaunchArgument("controller_launch_yaw_readiness_ratio", default_value=""),
+            DeclareLaunchArgument("controller_planner_heartbeat_timeout", default_value=""),
+            DeclareLaunchArgument("controller_control_rate", default_value=""),
+            DeclareLaunchArgument("fsm_emergency_time", default_value=""),
+            DeclareLaunchArgument("fsm_local_progress_collision_backtrack", default_value=""),
+            DeclareLaunchArgument("fsm_local_progress_max_cross_track", default_value=""),
+            DeclareLaunchArgument("fsm_local_recovery_check_min_cross_track", default_value=""),
+            DeclareLaunchArgument("fsm_local_recovery_lookahead", default_value=""),
+            DeclareLaunchArgument("fsm_local_recovery_sample_distance", default_value=""),
+            DeclareLaunchArgument("fsm_local_finish_speed", default_value=""),
+            DeclareLaunchArgument("manager_max_vel", default_value=""),
+            DeclareLaunchArgument("manager_max_acc", default_value=""),
             DeclareLaunchArgument("keypoints_file", default_value=""),
             DeclareLaunchArgument("use_gpu", default_value="false"),
             DeclareLaunchArgument("use_pcd_map", default_value="false"),

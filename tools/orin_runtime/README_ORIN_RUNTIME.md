@@ -2,6 +2,14 @@
 
 这个包是给 Orin NX 运行用的 ARM64 ROS 2 install 产物。
 
+> **当前真机请先阅读：** 早期章节中的 `/state_estimation`、
+> `/cloud_registered`、`/body_state_estimation` 和 `lio_odom` 仅用于旧 bag/
+> 旧 runtime。当前默认链路使用 `/state_estimation_global`、
+> `/cloud_registered_global`、`/body_state_estimation_global` 和 `lio_map`。
+> 源码工作区直接运行时，请优先按
+> [`../../doc/局部路径闭环控制升级与真机测试指南.md`](../../doc/局部路径闭环控制升级与真机测试指南.md)
+> 操作。
+
 ## 1. 解压
 
 建议放到 Orin NX 的 `/app`：
@@ -316,6 +324,10 @@ ros2 launch scan_planner run.launch.py \
 use_zsibot_udp_client:=true
 ```
 # 当前真机默认接口（lio_map）
+
+> **请优先按本节以及真机测试指南操作。** 本节之前出现的
+> `/state_estimation`、`/cloud_registered`、`/body_state_estimation` 和
+> `lio_odom` 命令是旧链路调试记录，不适用于当前真机默认配置。
 
 本文件后部包含早期 `lio_odom` 调试记录。当前两个 `run_real_planner*.sh` 已统一为：
 

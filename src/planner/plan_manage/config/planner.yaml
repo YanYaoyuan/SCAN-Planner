@@ -37,6 +37,53 @@ scan_planner_node:
     fsm.odom_timeout: 0.30
     fsm.expected_odom_frame: lio_map
 
+    # 局部 B-spline 的执行进度只由真实 odom 空间投影决定，不再使用墙钟时间。
+    # movement credit 限制静止/自交路径上的异常前跳；控制器使用相同默认值。
+    fsm.local_progress_sample_dt: 0.05
+    fsm.local_progress_max_advance: 0.75
+    fsm.local_progress_movement_scale: 1.5
+    fsm.local_progress_movement_deadband: 0.01
+    fsm.local_progress_initial_credit: 0.15
+
+    # 碰撞检查从实际进度向后保留该弧长，避免离散投影刚越过障碍点就漏检。
+    fsm.local_progress_collision_backtrack: 0.10
+
+    # 偏离 B-spline 超过 max_cross_track 立即停车重规划。实机到前视点的
+    # Pure Pursuit 圆弧、直线弦及二者之间扫掠带始终检查，弥补“只检查
+    # 原 B-spline”留下的切角盲区；min_cross_track 现在只区分诊断日志中
+    # 的“明显离轨恢复”和“正常跟踪”，不再作为碰撞检查开关。
+    fsm.local_progress_max_cross_track: 0.40
+    fsm.local_recovery_check_min_cross_track: 0.05
+    fsm.local_recovery_lookahead: 0.45
+    fsm.local_recovery_yaw_lookahead: 0.55
+    # 真机推荐保持 0.05m；低于 0.05 会显著放大“中心位置×机身 yaw”的
+    # 笛卡尔采样量，极端 0.40m 横偏时可能触发有界预算并安全停车。
+    fsm.local_recovery_sample_distance: 0.05
+
+    # 以下参数必须与 controllers.yaml 的同名控制语义同步。FSM 用它们覆盖
+    # ALIGN 原地转向、TRACK 航向反馈、yaw=0 直行以及 SDK 最小非零线/角
+    # 速度的保守包络；若修改真机控制参数，请同步修改这里对应的值。
+    fsm.local_recovery_heading_feedback_gain: 0.35
+    fsm.local_recovery_align_yaw_gain: 0.80
+    fsm.local_recovery_align_enter_error: 0.80
+    fsm.local_recovery_align_exit_error: 0.45
+    fsm.local_recovery_lateral_error_deadband: 0.04
+    fsm.local_recovery_heading_error_deadband: 0.035
+    fsm.local_recovery_curvature_deadband: 0.04
+    fsm.local_recovery_minimum_lookahead: 0.05
+    fsm.local_recovery_min_forward_speed: 0.05
+    fsm.local_recovery_yaw_deadband: 0.025
+    fsm.local_recovery_yaw_start_threshold: 0.06
+    fsm.local_recovery_min_yaw_rate: 0.10
+    fsm.local_recovery_max_yaw_rate: 0.50
+
+    # 控制器会在局部终点前正常减速，因此 FSM 用“末端距离+剩余弧长+
+    # 实测平面速度”共同判定完成，不要求投影时间精确到 duration，也不会
+    # 在制动尚未结束时提前 clear 轨迹。0.06 比 bridge 0.05m/s 死区略留余量。
+    fsm.local_finish_distance: 0.15
+    fsm.local_finish_remaining_length: 0.18
+    fsm.local_finish_speed: 0.06
+
     # /planning/global_path 已表示机体中心高度，不再重复叠加 body_height。
     fsm.reference_path_height_offset: 0.0
 

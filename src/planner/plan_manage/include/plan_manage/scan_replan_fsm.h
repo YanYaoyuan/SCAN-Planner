@@ -20,9 +20,12 @@
 
 #include <bspline_opt/bspline_optimizer.h>
 #include <plan_env/grid_map.h>
+#include <plan_manage/local_trajectory_tracker.h>
+#include <plan_manage/pure_pursuit_recovery_sweep.h>
 #include <plan_manage/reference_path_tracker.h>
 #include <scan_planner_msgs/msg/bspline.hpp>
 #include <scan_planner_msgs/msg/data_disp.hpp>
+#include <scan_planner_msgs/msg/planner_heartbeat.hpp>
 #include <plan_manage/planner_manager.h>
 #include <traj_utils/planning_visualization.h>
 
@@ -82,6 +85,21 @@ namespace scan_planner
     double reference_finish_distance_;
     double reference_finish_remaining_length_;
     double odom_timeout_;
+    double local_progress_sample_dt_;
+    double local_progress_max_advance_;
+    double local_progress_movement_scale_;
+    double local_progress_movement_deadband_;
+    double local_progress_initial_credit_;
+    double local_progress_collision_backtrack_;
+    double local_progress_max_cross_track_;
+    double local_recovery_check_min_cross_track_;
+    double local_recovery_lookahead_;
+    double local_recovery_yaw_lookahead_;
+    double local_recovery_sample_distance_;
+    RecoverySweepControlLimits local_recovery_control_limits_;
+    double local_finish_distance_;
+    double local_finish_remaining_length_;
+    double local_finish_speed_;
     std::string self_inflation_frame_id_;
     std::string expected_odom_frame_;
     std::string goal_frame_id_;
@@ -112,6 +130,8 @@ namespace scan_planner
     std::vector<Eigen::Vector3d> active_waypoints_;
     std::vector<Eigen::Vector3d> local_reference_seed_;
     ReferencePathTracker reference_path_tracker_;
+    LocalTrajectoryTracker local_trajectory_tracker_;
+    int local_progress_traj_id_{-1};
     int current_wp_;
     double reference_path_total_length_{0.0};
     double reference_local_target_arc_length_{0.0};
@@ -120,13 +140,14 @@ namespace scan_planner
 
     /* ROS utils */
     rclcpp::Node *node_{nullptr};
-    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
+    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_, heartbeat_timer_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
     nav_msgs::msg::Path::ConstSharedPtr pending_reference_path_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr go2_execution_frozen_sub_;
     rclcpp::Publisher<scan_planner_msgs::msg::Bspline>::SharedPtr bspline_pub_;
+    rclcpp::Publisher<scan_planner_msgs::msg::PlannerHeartbeat>::SharedPtr planner_heartbeat_pub_;
     rclcpp::Publisher<scan_planner_msgs::msg::DataDisp>::SharedPtr data_disp_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr self_inflation_pub_;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -182,8 +203,18 @@ namespace scan_planner
     double getOdomYaw() const;
     /** @brief Estimates planar segment yaw. @param from Segment start. @param to Segment end. @return Yaw in radians. */
     double estimateYawFromSegment(const Eigen::Vector3d &from, const Eigen::Vector3d &to) const;
-    /** @brief Freezes or resumes trajectory time using controller feedback. */
+    /** @brief 兼容旧反馈；空间进度模式下仅更新时间戳，不再平移轨迹时间。 */
     void updateLocalTrajTimeFreeze();
+    /** @brief 为当前局部 B-spline 建立空间进度采样。 */
+    bool resetLocalTrajectoryProgress();
+    /** @brief 用实际里程计更新局部轨迹进度并返回对应 B-spline 时间。 */
+    double currentLocalTrajectoryTime();
+    /** @brief 返回带空间回退余量的碰撞扫描起始时间。 */
+    double localCollisionScanStartTime(double progress_time) const;
+    /** @brief 根据末端距离、剩余弧长和实测速度判断局部轨迹是否完成。 */
+    bool localTrajectoryComplete() const;
+    /** @brief 周期发布带轨迹身份的规划器存活心跳。 */
+    void publishPlannerHeartbeat();
 
     /** @brief Main FSM timer callback. */
     void execFSMCallback();

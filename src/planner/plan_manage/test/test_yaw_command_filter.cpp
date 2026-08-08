@@ -100,5 +100,29 @@ TEST(YawCommandFilter, ReversalMustReenterThroughStartThreshold)
   EXPECT_NEAR(filter.update(-0.13, 0.1), -0.13, 1.0e-12);
 }
 
+TEST(YawCommandFilter, ConservativeRobotDefaultsStartPersistentModerateTurn)
+{
+  YawCommandFilter filter(
+      YawCommandFilter::Config{0.025, 0.12, 1.0, 0.12, 0.08, 0.04, 0.10});
+
+  double output = 0.0;
+  for (int iteration = 0; iteration < 200; ++iteration)
+    output = filter.update(0.09, 0.02);
+
+  // SDK 量化要求决定最终输出只能是 0 或至少 0.1rad/s。
+  EXPECT_NEAR(output, 0.10, 1.0e-12);
+}
+
+TEST(YawCommandFilter, ExactRawStartThresholdCannotDeadlock)
+{
+  YawCommandFilter filter(
+      YawCommandFilter::Config{0.025, 0.12, 1.0, 0.12, 0.08, 0.04, 0.10});
+
+  // 旧实现等待 filtered>=0.08；一阶低通只能从下方渐近 0.08，最终会
+  // 停在相邻浮点数而永久输出零。现在由去死区后的 raw 目标触发启动。
+  const double output = filter.update(0.08, 0.02);
+  EXPECT_NEAR(output, 0.10, 1.0e-12);
+}
+
 }  // namespace
 }  // namespace scan_planner

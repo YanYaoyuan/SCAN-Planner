@@ -16,6 +16,9 @@ Environment overrides:
   GOAL_X/GOAL_Y/GOAL_Z    default: validated sample goal
   RUN_SECONDS_AFTER_GOAL  default: 40
   WAIT_FOR_INPUT_SECONDS  default: 30
+  LIDAR_ODOM_TOPIC        default: /state_estimation (legacy offline bag)
+  BODY_ODOM_TOPIC         default: /body_state_estimation (legacy offline bag)
+  CLOUD_TOPIC             default: /cloud_registered (legacy offline bag)
   ROS_DOMAIN_ID           default: 73
 EOF
   exit 0
@@ -27,6 +30,9 @@ PCD_MAP_FILE="${PCD_MAP_FILE:-${DEFAULT_PCD_MAP}}"
 OUTPUT_BAG="${OUTPUT_BAG:-/tmp/scanplanner_offline_outputs_$(date +%Y%m%d_%H%M%S)}"
 WAIT_FOR_INPUT_SECONDS="${WAIT_FOR_INPUT_SECONDS:-30}"
 RUN_SECONDS_AFTER_GOAL="${RUN_SECONDS_AFTER_GOAL:-40}"
+LIDAR_ODOM_TOPIC="${LIDAR_ODOM_TOPIC:-/state_estimation}"
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation}"
+CLOUD_TOPIC="${CLOUD_TOPIC:-/cloud_registered}"
 
 require_path "${BAG_PATH}" "input bag"
 require_path "${PCD_MAP_FILE}" "PCD map"
@@ -48,20 +54,28 @@ echo "  pcd map=${PCD_MAP_FILE}"
 echo "  output bag=${OUTPUT_BAG}"
 echo "  ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
 
-PCD_MAP_FILE="${PCD_MAP_FILE}" "${SCRIPT_DIR}/start_planner_only.sh" &
+PCD_MAP_FILE="${PCD_MAP_FILE}" \
+LIDAR_ODOM_TOPIC="${LIDAR_ODOM_TOPIC}" \
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC}" \
+CLOUD_TOPIC="${CLOUD_TOPIC}" \
+"${SCRIPT_DIR}/start_planner_only.sh" &
 pids+=("$!")
 sleep 2
 
-"${SCRIPT_DIR}/play_input_bag_only.sh" "${BAG_PATH}" &
+"${SCRIPT_DIR}/play_input_bag_only.sh" "${BAG_PATH}" \
+  --topics "${LIDAR_ODOM_TOPIC}" "${CLOUD_TOPIC}" &
 pids+=("$!")
 sleep 2
 
-OUTPUT_BAG="${OUTPUT_BAG}" "${SCRIPT_DIR}/record_outputs.sh" &
+OUTPUT_BAG="${OUTPUT_BAG}" \
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC}" \
+CLOUD_TOPIC="${CLOUD_TOPIC}" \
+"${SCRIPT_DIR}/record_outputs.sh" &
 pids+=("$!")
 
-echo "Waiting for /body_state_estimation..."
-if ! timeout "${WAIT_FOR_INPUT_SECONDS}" ros2 topic echo /body_state_estimation --once >/tmp/scanplanner_offline_body_odom.txt 2>&1; then
-  echo "ERROR: /body_state_estimation did not arrive within ${WAIT_FOR_INPUT_SECONDS}s." >&2
+echo "Waiting for ${BODY_ODOM_TOPIC}..."
+if ! timeout "${WAIT_FOR_INPUT_SECONDS}" ros2 topic echo "${BODY_ODOM_TOPIC}" --once >/tmp/scanplanner_offline_body_odom.txt 2>&1; then
+  echo "ERROR: ${BODY_ODOM_TOPIC} did not arrive within ${WAIT_FOR_INPUT_SECONDS}s." >&2
   echo "See /tmp/scanplanner_offline_body_odom.txt for ros2 topic echo output." >&2
   exit 1
 fi
