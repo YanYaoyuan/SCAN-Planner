@@ -32,8 +32,8 @@ public:
   /** @brief Loads network, safety, and command-limit parameters and initializes the SDK. */
   ZsiBotCmdBridge() : Node("zsibot_cmd_bridge")
   {
-    local_ip_ = declare_parameter<std::string>("local_ip", "192.168.168.10");
-    dog_ip_ = declare_parameter<std::string>("dog_ip", "192.168.168.168");
+    local_ip_ = declare_parameter<std::string>("local_ip", "192.168.234.234");
+    dog_ip_ = declare_parameter<std::string>("dog_ip", "192.168.234.1");
     local_port_ = declare_parameter<int>("local_port", 43988);
     publish_rate_ = declare_parameter<double>("publish_rate", 50.0);
     cmd_timeout_ = declare_parameter<double>("cmd_timeout", 0.3);
