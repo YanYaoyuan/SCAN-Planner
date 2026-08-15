@@ -2,6 +2,9 @@
 /build/
 /install/
 /log/
+/build-dog3/
+/install-dog3/
+/log-dog3/
 /build-orin*/
 /install-orin*/
 /log-orin*/

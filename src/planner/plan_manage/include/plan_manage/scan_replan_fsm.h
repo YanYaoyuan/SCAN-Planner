@@ -7,6 +7,7 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <chrono>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <iostream>
 #include <nav_msgs/msg/odometry.hpp>
@@ -68,6 +69,9 @@ namespace scan_planner
     int waypoint_num_;
     double planning_horizon_;
     double emergency_time_;
+    double failure_retry_period_;
+    double min_replan_period_;
+    double max_replan_period_;
     double rviz_goal_height_;
     double self_inflation_z_up_, self_inflation_z_down_;
     double self_double_cylinder_radius_, self_double_cylinder_offset_;
@@ -76,6 +80,7 @@ namespace scan_planner
     double reference_path_min_point_spacing_;
     double reference_path_closed_tolerance_;
     double reference_path_min_length_;
+    double reference_path_same_tolerance_;
     double reference_progress_max_advance_;
     double reference_progress_movement_scale_;
     double reference_progress_movement_deadband_;
@@ -100,6 +105,11 @@ namespace scan_planner
     double local_finish_distance_;
     double local_finish_remaining_length_;
     double local_finish_speed_;
+    bool publish_local_path_;
+    double local_path_sample_dt_;
+    int local_path_max_samples_;
+    bool use_sim_time_;
+    bool have_last_ros_time_{false};
     std::string self_inflation_frame_id_;
     std::string expected_odom_frame_;
     std::string goal_frame_id_;
@@ -118,8 +128,14 @@ namespace scan_planner
     int continuously_called_times_{0};
     int replan_fail_count_{0};
     int max_replan_fail_count_{1000};
+    bool replan_retry_pending_{false};
+    bool have_successful_plan_time_{false};
+    std::chrono::steady_clock::time_point next_replan_retry_time_;
+    std::chrono::steady_clock::time_point last_successful_plan_time_;
+    std::chrono::steady_clock::time_point last_odom_callback_time_;
     rclcpp::Time last_freeze_update_time_;
-    rclcpp::Time last_odom_receive_time_;
+    rclcpp::Time last_odom_source_time_;
+    rclcpp::Time last_ros_time_{0, 0, RCL_ROS_TIME};
 
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
     Eigen::Quaterniond odom_orient_;
@@ -129,6 +145,7 @@ namespace scan_planner
     Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
     std::vector<Eigen::Vector3d> active_waypoints_;
     std::vector<Eigen::Vector3d> local_reference_seed_;
+    std::vector<Eigen::Vector3d> last_reference_input_;
     ReferencePathTracker reference_path_tracker_;
     LocalTrajectoryTracker local_trajectory_tracker_;
     int local_progress_traj_id_{-1};
@@ -145,8 +162,10 @@ namespace scan_planner
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
     nav_msgs::msg::Path::ConstSharedPtr pending_reference_path_;
+    nav_msgs::msg::Path::ConstSharedPtr last_accepted_reference_path_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr go2_execution_frozen_sub_;
     rclcpp::Publisher<scan_planner_msgs::msg::Bspline>::SharedPtr bspline_pub_;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr local_path_pub_;
     rclcpp::Publisher<scan_planner_msgs::msg::PlannerHeartbeat>::SharedPtr planner_heartbeat_pub_;
     rclcpp::Publisher<scan_planner_msgs::msg::DataDisp>::SharedPtr data_disp_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr self_inflation_pub_;
@@ -177,9 +196,11 @@ namespace scan_planner
     bool planNextWaypoint();
     /** @brief Tests whether preset waypoint sequencing is active. @return True in mode 2. */
     bool isWaypointSequenceMode() const;
-    /** @brief Validates and deduplicates a supplied reference route. @param input Raw points. @param[out] output Cleaned points. @return True when valid. */
+    /** @brief Validates and deduplicates a supplied reference route. @param input Raw points. @param[out] output Cleaned points. @param[out] path_closed Whether the cleaned route is closed. @param[out] path_length Length from current odom through the cleaned route. @return True when valid. */
     bool prepareReferenceWaypoints(const std::vector<Eigen::Vector3d> &input,
-                                   std::vector<Eigen::Vector3d> &output);
+                                   std::vector<Eigen::Vector3d> &output,
+                                   bool &path_closed,
+                                   double &path_length);
     /** @brief Projects odometry monotonically onto the immutable reference polyline. @return Updated arc-length progress in metres. */
     double updateReferencePathProgress();
     /** @brief Computes unconsumed reference-route length. @return Remaining arc length in meters. */
@@ -195,8 +216,20 @@ namespace scan_planner
     void getLocalTarget();
     /** @brief Applies failure-count fail-safe handling. */
     void finishProcess();
+    /** @brief Returns true while a failed planning attempt is in its retry backoff window. */
+    bool shouldDelayReplanRetry();
+    /** @brief Records a failed planning attempt and starts retry backoff. */
+    void recordReplanFailure();
+    /** @brief Records a successful planning attempt and clears retry backoff. */
+    void recordReplanSuccess();
+    /** @brief Resets rosbag playback state after a backwards simulated-time jump. @return True when a reset occurred. */
+    bool resetIfRosTimeJumpedBackward();
     /** @brief Clears the controller's active trajectory. @param reason Diagnostic reason. */
     void publishTrajectoryClear(const std::string &reason);
+    /** @brief Publishes a sampled nav_msgs/Path representation of a local B-spline. @param position_traj Local position trajectory. */
+    void publishLocalPath(UniformBspline position_traj);
+    /** @brief Clears the latched local-path output. */
+    void publishLocalPathClear();
     /** @brief Publishes the robot inflation model marker. */
     void publishSelfInflationMarker();
     /** @brief Returns current odometry yaw. @return Yaw in radians. */

@@ -27,6 +27,14 @@ scan_planner_node:
     # 调小: 更早尝试重规划而不是急停; 调大: 更保守，接近障碍更容易急停。
     fsm.emergency_time: 1.0
 
+    # 规划失败时按稳态时钟退避，避免 100Hz FSM 连续打满优化器。
+    fsm.failure_retry_period: 0.20
+
+    # 成功规划后的最短/最长刷新周期。距离未达到 thresh_replan 时仍会在
+    # max_replan_period 到期后刷新局部路径，便于 planner-only 下游持续消费。
+    fsm.min_replan_period: 0.20
+    fsm.max_replan_period: 2.0
+
     # 重规划连续失败时是否进入 fail-safe / emergency stop。
     fsm.fail_safe: true
 
@@ -84,6 +92,12 @@ scan_planner_node:
     fsm.local_finish_remaining_length: 0.18
     fsm.local_finish_speed: 0.06
 
+    # 规划节点可直接输出离散 nav_msgs/Path。通用启动默认关闭；dog3 的
+    # planner-only 配置会开启并将其重映射到 /map_frame/local_path。
+    local_path.publish: false
+    local_path.sample_dt: 0.10
+    local_path.max_samples: 10000
+
     # /planning/global_path 已表示机体中心高度，不再重复叠加 body_height。
     fsm.reference_path_height_offset: 0.0
 
@@ -95,6 +109,9 @@ scan_planner_node:
 
     # 清洗后路径总长度下限，防止误把单点或极短路径当成有效任务。
     fsm.reference_path_min_length: 1.0
+
+    # 活动路线收到逐点偏差不超过该值的重复消息时不重置进度。
+    fsm.reference_path_same_tolerance: 0.02
 
     # 单次参考折线投影允许搜索的最大前向弧长，单位 m。
     fsm.reference_progress_max_advance: 2.0
@@ -195,7 +212,20 @@ scan_planner_node:
     # 传感器类型: lidar 或 depth。真机 Livox 用 lidar。
     grid_map.sensor_type: lidar
     grid_map.sensor_frame_id: livox_frame
+    # 留空时按 cloud_is_world 自动使用世界系或 sensor_frame_id。dog3 的
+    # 点云 header 使用 vita_lidar，而 sensor odom child 使用 lidar_frame，
+    # 因此其专用配置会显式声明二者的接口别名。
+    grid_map.cloud_frame_id: ""
     grid_map.lidar_sync_tolerance: 0.05
+    # 最后一次有效占据更新的墙钟超时。超时后模式3立即撤销运动授权，
+    # 等新鲜的同步点云/位姿恢复后再重新验收已缓存的全局路径。
+    # 需大于单线程规划器在目标硬件上的最坏正常优化时间；同时仍会按
+    # 消息源 stamp 拒绝 executor 阻塞期间积压的旧观测。
+    grid_map.input_timeout: 2.0
+    # 默认 fail-closed。只有确认不同 frame 名物理等价、或实测同步相位后，
+    # 才可在专用部署配置中关闭相应严检；关闭时节点仍持续告警。
+    grid_map.strict_frame_check: true
+    grid_map.strict_sync_check: true
 
     # 点云是否已经在 grid_map.frame_id 世界系下。
     # SLAM 的 /cloud_registered_global 已经是 lio_map 下点云，所以真机保持 true。
@@ -244,6 +274,9 @@ scan_planner_node:
     # 你看到 /grid_map/occupancy 上下偏差时，不要只看它；同时看 /grid_map/occupancy_inflate。
     grid_map.vis_height: 0.3
     grid_map.show_occ_time: false
+    # 地图融合与可视化发布频率可分别配置；通用配置保持原 20 Hz 行为。
+    grid_map.update_frequency: 20.0
+    visualization.grid_map_frequency: 20.0
 
     # =========================
     # Trajectory generation / curve feasibility
@@ -268,6 +301,12 @@ scan_planner_node:
 
     # manager 内部使用的局部规划前视距离，建议和 fsm.planning_horizon 保持一致。
     manager.planning_horizon: 4.0
+
+    # 模式3全局折线按累计弧长统一重采样，避免上游路径过密导致最小 snap
+    # 问题规模暴涨，也会为稀疏长段补齐中间点并保留原终点。
+    global_path.resample_spacing: 0.20
+    global_path.min_spacing: 0.16
+    global_path.max_spacing: 0.24
 
     # =========================
     # B-spline optimization weights

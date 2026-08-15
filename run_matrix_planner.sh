@@ -13,7 +13,7 @@ BODY_FRAME_ID="${BODY_FRAME_ID:-scan_base_link}"
 SENSOR_FRAME_ID="${SENSOR_FRAME_ID:-livox_frame}"
 GOAL_TOPIC="${GOAL_TOPIC:-/move_base_simple/goal}"
 NAVI_MODE="${NAVI_MODE:-3}"
-CONTROL_MODE="${CONTROL_MODE:-bridge}"
+CONTROL_MODE="${CONTROL_MODE:-none}"
 START_ZENOH="${START_ZENOH:-1}"
 RVIZ="${RVIZ:-0}"
 
@@ -45,8 +45,8 @@ Usage:
   ./run_matrix_planner.sh [options] [extra ros2 launch args]
 
 Options:
-  --no-control            Start planner only; do not start ZsiBot SDK bridge.
-  --control               Start planner and ZsiBot SDK bridge. Default.
+  --no-control            Start planner only. This is the default.
+  --control               Explicitly opt in to the deprecated ZsiBot SDK bridge.
   --navi-mode MODE        1 for direct goal, 2 for waypoints, 3 for generated global path. Default: ${NAVI_MODE}
   --goal-topic TOPIC      Goal topic. Default: ${GOAL_TOPIC}
   --cloud-topic TOPIC     World cloud topic from SLAM. Default: ${CLOUD_TOPIC}
@@ -61,6 +61,8 @@ Environment:
   ROS_DOMAIN_ID defaults to 89.
   RMW_IMPLEMENTATION defaults to rmw_zenoh_cpp.
   MATRIX_ROOT defaults to ${MATRIX_ROOT}.
+  --control also requires building zsibot_cmd_bridge with
+  -DZSIBOT_ENABLE_DEPRECATED_SDK_TARGETS=ON.
 EOF
 }
 
@@ -248,6 +250,7 @@ echo "[INFO] waiting for first SLAM cloud sample: $CLOUD_TOPIC"
 wait_for_message "$CLOUD_TOPIC" 45
 
 if [[ "$CONTROL_MODE" == "bridge" ]]; then
+  echo "[WARN] deprecated ZsiBot SDK bridge explicitly enabled; stop any unified robot bridge" >&2
   BRIDGE_CONFIG_FILE="$(write_bridge_config)"
   echo "[INFO] control bridge enabled: $BRIDGE_CONFIG_FILE"
 else
@@ -255,8 +258,10 @@ else
 fi
 
 USE_BRIDGE="false"
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT="false"
 if [[ "$CONTROL_MODE" == "bridge" ]]; then
   USE_BRIDGE="true"
+  ENABLE_DEPRECATED_ZSIBOT_TRANSPORT="true"
 fi
 
 USE_GLOBAL_PATH_PUBLISHER="false"
@@ -285,6 +290,7 @@ exec ros2 launch scan_planner run.launch.py \
   controller_pure_pursuit_speed:="$CONTROLLER_PURE_PURSUIT_SPEED" \
   use_gpu:=false \
   publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:="$ENABLE_DEPRECATED_ZSIBOT_TRANSPORT" \
   use_zsibot_bridge:="$USE_BRIDGE" \
   zsibot_config_file:="$BRIDGE_CONFIG_FILE" \
   use_lidar_to_body_odom:=true \

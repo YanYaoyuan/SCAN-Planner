@@ -1,0 +1,114 @@
+# dog3 模式3专用覆盖配置。
+# dog3_mode3.launch.py 会先加载 planner.yaml，再加载本文件；这里只保留
+# dog3 的接口、坐标系和现场参数差异，Omni 主线算法/安全默认值仍由
+# planner.yaml 统一维护。
+
+scan_planner_node:
+  ros__parameters:
+    use_sim_time: false
+
+    # 真机安全默认：不启动 RViz、不等待 /clock。PC 录包回放通过 launch
+    # 参数显式打开；dog3 上即使误传参数也会被启动文件强制关闭。
+    visualization.use_rviz: false
+    visualization.use_sim_time: false
+    visualization.republish_point_cloud_for_rviz: true
+    visualization.rviz_point_cloud_topic: "/lidar_points_rviz"
+    visualization.rviz_point_cloud_frame: "lidar_frame"
+    visualization.grid_map_frequency: 1.0
+
+    # dog3 固定为模式3：输入全局参考路径，规划节点只输出局部路径，
+    # 不启动 SCAN 自带 controller、仿真器或 robot_state_publisher。
+    fsm.navi_mode: 3
+    fsm.expected_odom_frame: "map_frame"
+    fsm.goal_frame_id: "map_frame"
+    fsm.planning_horizon: 7.0
+    fsm.reference_path_same_tolerance: 0.02
+    # 单线程同步优化期间传感器回调会暂停；需高于 dog3 正常规划 P99。
+    # freshness 同时核对 odom 消息源 stamp，积压旧消息不能刷新该 watchdog。
+    fsm.odom_timeout: 2.0
+    fsm.failure_retry_period: 0.20
+    fsm.min_replan_period: 0.20
+    fsm.max_replan_period: 0.20
+    manager.planning_horizon: 7.0
+
+    # dog3 上下游接口。代码内部仍使用稳定的相对话题，由 launch remap。
+    topics.body_odom: "/relocalizing/map_frame/odometry"
+    topics.sensor_odom: "/relocalizing/map_frame/odometry"
+    topics.point_cloud: "/lidar_points"
+    topics.depth_image: "/camera/aligned_depth_to_color/image_raw"
+    topics.reference_path: "/map_frame/global_path"
+    topics.manual_goal: "/move_base_simple/goal"
+    topics.execution_frozen: "/planning/go2_execution_frozen"
+    # Omni 的 Bspline 带 Header 和安全身份字段，wire schema 与 Desktop
+    # 旧包不同；使用 v2 话题避免现场残留旧 endpoint 与新消息同名冲突。
+    topics.bspline: "/planning/bspline_v2"
+    topics.planner_heartbeat: "/planning/planner_heartbeat"
+    topics.local_path: "/map_frame/local_path"
+    topics.data_display: "/planning/data_display"
+    topics.self_inflation: "/planning/self_inflation"
+    topics.occupancy: "/grid_map/occupancy"
+    topics.occupancy_inflate: "/grid_map/occupancy_3d_ex"
+    topics.sliding_map_bbox: "/grid_map/sliding_map_bbox"
+    topics.unknown: "/grid_map/unknown"
+    topics.depth_cloud: "/grid_map/depth_cloud"
+    topics.sensor_pose_extrinsic: "/grid_map/sensor_pose_extrinsic"
+
+    local_path.publish: true
+    local_path.sample_dt: 0.10
+    local_path.max_samples: 10000
+
+    # Desktop dog3 契约把 odom pose 描述为 map_frame -> lidar_frame，点云
+    # header 使用 vita_lidar。这里分别声明两种输入名，并保留 Omni 的
+    # 点云/位姿近似时间同步与严检；首次上板仍必须用真实话题核对。
+    grid_map.frame_id: "map_frame"
+    grid_map.sliding_map_frame_id: "sliding_map"
+    grid_map.sensor_type: "lidar"
+    grid_map.sensor_frame_id: "lidar_frame"
+    grid_map.cloud_frame_id: "vita_lidar"
+    grid_map.lidar_sync_tolerance: 0.05
+    # dog3 目标应实测规划 P99；此值须高于正常优化耗时，旧积压消息仍由
+    # 源 stamp freshness 拒绝，不能因“刚处理”而伪装成新地图。
+    grid_map.input_timeout: 2.0
+    grid_map.strict_frame_check: true
+    grid_map.strict_sync_check: true
+    grid_map.cloud_is_world: false
+    grid_map.need_extrinsic: false
+    grid_map.ground_height: 0.0
+    grid_map.body_height: 0.5
+
+    grid_map.sliding_map_size_x: 16.0
+    grid_map.sliding_map_size_y: 16.0
+    grid_map.sliding_map_size_z: 5.0
+    grid_map.local_update_range_x: 7.5
+    grid_map.local_update_range_y: 7.5
+    grid_map.local_update_range_z: 2.5
+    grid_map.map_sliding_en: true
+    grid_map.map_sliding_thresh: 0.2
+    grid_map.max_ray_length: 7.5
+    grid_map.update_frequency: 20.0
+
+    grid_map.double_cylinder_radius: 0.25
+    grid_map.double_cylinder_offset: 0.18
+    grid_map.obstacles_inflation_z_up: 0.1
+    grid_map.obstacles_inflation_z_down: 0.4
+
+    # Desktop dog3 版已验证的模式3轨迹参数。
+    manager.max_vel: 0.75
+    manager.max_acc: 0.5
+    manager.max_jerk: 4.0
+    manager.control_points_distance: 0.2
+    manager.feasibility_tolerance: 0.5
+    global_path.resample_spacing: 0.20
+    global_path.min_spacing: 0.16
+    global_path.max_spacing: 0.24
+    optimization.lambda_smooth: 1.0
+    optimization.lambda_collision: 1.0
+    optimization.lambda_feasibility: 0.1
+    optimization.lambda_fitness: 1.0
+    optimization.lambda_reference: 2.0
+    optimization.dist0: 0.2
+    optimization.max_vel: 0.75
+    optimization.max_acc: 0.5
+    optimization.vel_tolerance: 1.0
+    optimization.acc_tolerance: 1.0
+    optimization.order: 3

@@ -1,5 +1,13 @@
 # ZsiBot Cmd Bridge Deployment
 
+> **Deprecated / opt-in only.** Product deployments must use the unified robot
+> bridge as the sole owner of the vendor SDK. Every launch below requires
+> `enable_deprecated_zsibot_transport:=true`; runtime wrapper scripts additionally
+> require `ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1`.
+> The shared `flock` only excludes SDK owners on the same host. Before any
+> isolated legacy test, stop the product Gateway on Orin and independently
+> verify that the RK3588 is not running another proxy or vendor SDK demo.
+
 `zsibot_cmd_bridge` provides two ways to drive a ZsiBot robot from ROS 2
 velocity commands:
 
@@ -18,7 +26,8 @@ Use these values for the current robot:
 
 ## Mode A: UDP Proxy Without Editing RK3588 Config
 
-This is the recommended first deployment mode for the current dual-board robot.
+Within an explicitly isolated legacy migration test, this mode minimizes RK3588
+configuration changes. It is not a product deployment mode.
 The RK3588 `/opt/export/config/sdk_config.yaml` can stay at its factory-style
 local settings:
 
@@ -41,7 +50,7 @@ Start the proxy on RK3588:
 
 ```bash
 cd /app/rk_proxy
-./run_zsibot_sdk_proxy.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_zsibot_sdk_proxy.sh
 ```
 
 Start the ROS 2 UDP client on Orin NX:
@@ -49,6 +58,7 @@ Start the ROS 2 UDP client on Orin NX:
 ```bash
 source install/setup.bash
 ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py \
+  enable_deprecated_zsibot_transport:=true \
   cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
@@ -59,6 +69,7 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_udp_client:=true \
   real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
@@ -100,7 +111,8 @@ colcon build --symlink-install \
   --packages-select \
   scan_planner_msgs plan_env path_searching bspline_opt traj_utils \
   go2_description scan_planner zsibot_cmd_bridge \
-  --cmake-args -DCMAKE_BUILD_TYPE=Release
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DZSIBOT_ENABLE_DEPRECATED_SDK_TARGETS=ON
 ```
 
 For the point-foot model, add `-DZSIBOT_MODEL=zsl-1`.
@@ -114,6 +126,7 @@ source install/setup.bash
 ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   controller_mode:=closed_loop \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_bridge:=true
 ```
 
@@ -125,6 +138,7 @@ If the new robot uses different topic names, pass them at launch time:
 ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   controller_mode:=closed_loop \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_bridge:=true \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
@@ -188,6 +202,7 @@ Or start only the direct bridge:
 ```bash
 source install/setup.bash
 ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py \
+  enable_deprecated_zsibot_transport:=true \
   cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
@@ -196,6 +211,7 @@ For UDP proxy mode, start only the Orin UDP client:
 ```bash
 source install/setup.bash
 ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py \
+  enable_deprecated_zsibot_transport:=true \
   cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
@@ -262,6 +278,7 @@ requires `move()` to be called in standing state.
 
 | Parameter | Default | Notes |
 | --- | --- | --- |
+| `enable_deprecated_transport` | `false` | Required binary-level opt-in; guarded launches override it only after their own opt-in check |
 | `local_ip` | `192.168.234.234` | Orin NX IP on the robot network |
 | `dog_ip` | `192.168.234.1` | RK3588 / robot IP |
 | `local_port` | `43988` | Must match RK3588 `target_port` |
@@ -285,6 +302,7 @@ UDP client/proxy defaults:
 
 | Parameter / option | Default | Notes |
 | --- | --- | --- |
+| `enable_deprecated_transport` / `--enable-deprecated-transport` | `false` | Required binary-level opt-in for UDP client / SDK proxy |
 | `proxy_ip` | `192.168.234.1` | RK3588 IP used by Orin UDP client |
 | `proxy_port` / `--listen-port` | `44000` | UDP port between Orin and RK proxy |
 | `--sdk-local-ip` | `127.0.0.1` | RK local SDK client IP |

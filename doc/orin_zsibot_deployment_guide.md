@@ -1,9 +1,15 @@
 # SCAN-Planner + ZsiBot Orin NX 部署手册
 
-本文档面向当前双板机器狗：
+> **Phase 0 下线提示（2026-08）：** 本文中的 `zsibot_cmd_bridge`、
+> `zsibot_cmd_udp_client` 和 `zsibot_sdk_proxy` 均为旧兼容链路。产品部署应由
+> 统一 robot bridge 独占厂商 SDK。旧链路默认禁用，只有隔离迁移测试才设置
+> `ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1` 或 launch 参数
+> `enable_deprecated_zsibot_transport:=true`，且两套 bridge 严禁同时运行。
 
-- Orin NX：运行 SCAN-Planner、LIO/感知、`zsibot_cmd_bridge` 或 `zsibot_cmd_udp_client`
-- RK3588：运行 ZsiBot 原厂运动控制程序；UDP proxy 模式下额外运行 `zsibot_sdk_proxy`
+本文档面向当前双板机器狗。产品角色固定如下：
+
+- Orin NX：运行 SCAN-Planner、LIO/感知和统一 `rosdeck_robot_bridge` Gateway；
+- RK3588：只运行 ZsiBot 原厂运动控制程序，不运行 legacy `zsibot_sdk_proxy`；
 - Orin NX IP：`192.168.234.234`
 - RK3588 IP：`192.168.234.1`
 - SDK 端口：`43988`
@@ -19,22 +25,22 @@ LIO / Sensor Driver
 SCAN-Planner on Orin NX
   -> /scan_planner/cmd_vel
 
-方案 A，不修改 RK 配置：
-zsibot_cmd_udp_client on Orin NX
-  -> UDP 192.168.234.1:44000
-zsibot_sdk_proxy on RK3588
-  -> SDK 127.0.0.1:43988 -> 127.0.0.1
-  -> ZsiBot HighLevel::move(vx, vy, yaw_rate)
-
-方案 B，直接桥接：
-zsibot_cmd_bridge on Orin NX
+rosdeck_robot_bridge Gateway on Orin NX
+  -> authority / E-stop / watchdog / velocity limits
   -> ZsiBot HighLevel::move(vx, vy, yaw_rate)
 
 RK3588 motion_control
   -> motors / gait controller
 ```
 
-`/scan_planner/cmd_vel` 是本工程默认使用的隔离速度命令。`/planning/bspline` 是规划器内部轨迹输出，不能直接接机器狗底层。只有明确选择机器狗原生 `ecal2ros2` 控制通道时，才让 planner 直接发布 `/cmd_vel`。
+`/scan_planner/cmd_vel` 是本工程默认使用的隔离速度命令，由统一 Gateway 消费。
+`/planning/bspline` 是规划器内部轨迹输出，不能直接接机器狗底层；产品路径也不允许
+planner 直接发布 SDK-facing final topic。
+
+同机的 Gateway、旧 direct bridge 和旧 proxy 使用同一个
+`/run/lock/omni/zsibot_sdk_owner.lock`，竞争时 fail-closed。但 `flock` 不能跨
+Orin/RK 两块主机：上电编排必须另外确认 RK 上的 `zsibot_sdk_proxy` 和官方 SDK
+demo 已停止。不能把“Orin 已拿到文件锁”当成跨板唯一 owner 的证明。
 
 ## 2. Clone 代码
 
@@ -78,7 +84,7 @@ rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-## 4. RK3588 SDK 通信方案
+## 4. 旧 RK3588 SDK 通信方案（仅隔离迁移测试）
 
 从 Orin NX 登录 RK3588：
 
@@ -86,7 +92,7 @@ rosdep install --from-paths src --ignore-src -r -y
 ssh firefly@192.168.234.1
 ```
 
-### 4.1 推荐：不修改 RK3588 配置，使用 UDP proxy
+### 4.1 旧方案 A：不修改 RK3588 配置，使用 UDP proxy
 
 这种方式保留 RK3588 默认 SDK 配置：
 
@@ -99,7 +105,7 @@ target_port: 43988
 
 ```bash
 cd /app/rk_proxy
-./run_zsibot_sdk_proxy.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_zsibot_sdk_proxy.sh
 ```
 
 它会在 RK 上监听 `0.0.0.0:44000`，收到 Orin 的 UDP 速度包后，在 RK 本机调用 SDK：
@@ -138,19 +144,21 @@ cd ~/SCAN-Planner
 source /opt/ros/humble/setup.bash
 
 colcon build --symlink-install \
-  --packages-select \
-  scan_planner_msgs plan_env path_searching bspline_opt traj_utils \
-  go2_description scan_planner zsibot_cmd_bridge \
+  --packages-up-to scan_planner \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
 说明：
 
-- 这是真机最小编译集合，不会编译 `local_sensing_node`、`mockamap`、`map_generator` 等仿真包。
-- 默认编译 `zsl-1w`。
-- 如果以后换成点足版本，增加 `-DZSIBOT_MODEL=zsl-1`。
+- 这是默认产品编译，不构建任何持有厂商 SDK 的旧 target。
+- 隔离迁移测试若确实需要 direct bridge/proxy，额外选择
+  `zsibot_cmd_bridge` 并增加
+  `-DZSIBOT_ENABLE_DEPRECATED_SDK_TARGETS=ON`。
+- 旧 SDK target 默认型号为 `zsl-1w`；点足版本增加 `-DZSIBOT_MODEL=zsl-1`。
 
-不要在 Orin 真机部署时使用 `--packages-up-to scan_planner`，它会把仿真相关运行依赖也拉进来，可能因为 `glm`、Gazebo、RViz 等桌面依赖失败。
+`--packages-up-to scan_planner` 是当前默认产品构建入口，只构建规划器及其工作区
+依赖；旧 ZsiBot transport 不在默认依赖闭包中。若要做临时 UDP 兼容包，应单独
+选择 `zsibot_cmd_bridge`，并保持 `ZSIBOT_ENABLE_DEPRECATED_SDK_TARGETS=OFF`。
 
 编译成功后：
 
@@ -176,7 +184,7 @@ ssh firefly@192.168.234.1
 
 ### 6.2 SDK 动态库
 
-编译后检查 bridge 可执行文件是否能找到库：
+仅在隔离台架显式构建 direct bridge 后，才检查它能否找到 SDK 库：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -234,7 +242,10 @@ common:
 
 第二，FAST_LIO 的 `/state_estimation.child_frame_id` 是 `livox_frame`，它是激光，不是机身中心。新版本提供 `lidar_to_body_odom` 节点，可以从 `/state_estimation` 生成 `/body_state_estimation`。默认输出的 planner 机身坐标名是 `scan_base_link`，避免和机器狗原系统里的 `base_link` 冲突。参数 `body_to_sensor_*` 是 `scan_base_link -> livox_frame` 外参，单位是米和弧度；没量准外参前不要发导航 goal。
 
-第三，控制链路只能保留一条。新版本脚本默认让 planner 输出 `/scan_planner/cmd_vel`，再由 `zsibot_cmd_bridge` 或 `zsibot_cmd_udp_client` 订阅这个隔离话题。这样即使机器狗系统里还有 `ecal2ros2` 订阅 `/cmd_vel`，也不会同时收到 planner 的速度。
+第三，控制链路只能保留一条。产品脚本默认让 planner 输出
+`/scan_planner/cmd_vel`，再由统一 Gateway 订阅这个隔离话题。只有隔离迁移测试才
+改由 `zsibot_cmd_bridge` 或 `zsibot_cmd_udp_client` 订阅；此时必须先停止产品
+Gateway，并确认另一块板上也没有 SDK owner。
 
 检查命令：
 
@@ -255,7 +266,7 @@ sudo hwclock --systohc
 
 没有外网或没有电池 RTC 时，需要用板端可用的 NTP/GPS/PPS/RK 时间源做 systemd 启动同步；否则 ROS/TF 时间戳会停留在开机秒数，Foxglove 和 TF 缓存都可能异常。
 
-## 7. 启动 Planner + Bridge
+## 7. 启动 Planner + 统一 Gateway
 
 原始 SCAN-Planner 真机默认值可以直接接 FAST_LIO 的 `omni_dog.launch.py`
 和 `omni_dog_relocalization.launch.py`，但它把激光位姿同时当作机身位姿，只适合不运动的联调：
@@ -271,15 +282,24 @@ sudo hwclock --systohc
 
 真机闭环推荐使用“SLAM odom 隔离 + `/body_state_estimation` + `/scan_planner/cmd_vel`”方式运行。
 
-先在 RK3588 上保持 proxy 运行：
+产品启动前先确认 RK3588 上没有 legacy proxy：
 
 ```bash
-cd /app/rk_proxy
-./run_zsibot_sdk_proxy.sh
+ssh firefly@192.168.234.1 \
+  "pgrep -af 'zsibot_sdk_proxy|highlevel.*demo' || true"
 ```
 
-再在 Orin NX 上启动 planner。下面示例假设已经把 FAST_LIO 的 `common.odom_frame_id`
-改成了 `lio_odom`：
+然后在 Orin NX 通过 systemd 启动统一产品服务；源码联调也必须使用
+`product_bringup.launch.py`，不能直接执行 Gateway 单节点：
+
+```bash
+systemctl restart rosdeck-robot-bridge.service
+# 或源码工作区：
+ros2 launch rosdeck_robot_bridge product_bringup.launch.py
+```
+
+再启动 planner。下面示例假设已经把 FAST_LIO 的 `common.odom_frame_id` 改成了
+`lio_odom`：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -290,7 +310,6 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_udp_client:=true \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
@@ -323,7 +342,6 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_udp_client:=true \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/your/state_estimation \
   body_odom_topic:=/body_state_estimation \
@@ -348,14 +366,15 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=depth \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_udp_client:=true \
   real_body_pose_topic:=/your/robot/odom \
   real_sensor_pose_topic:=/your/camera/odom \
   real_depth_topic:=/your/depth/image \
   real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
-如果使用“直接桥接”方案，则把上面命令里的 `use_zsibot_udp_client:=true` 改成 `use_zsibot_bridge:=true`，并确认 RK3588 的 `/opt/export/config/sdk_config.yaml` 已经把 `target_ip` 改成 Orin NX 的 IP。
+若必须复现旧链路，只能在隔离台架先停止
+`rosdeck-robot-bridge.service`，再按第 4、9 节显式启用 direct/proxy。旧链路参数
+不得复制回上述产品命令。
 
 ### 7.1 录制 waypoint 并使用 navi_mode=2
 
@@ -411,7 +430,6 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
-  use_zsibot_udp_client:=true \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
   body_odom_topic:=/body_state_estimation \
@@ -518,7 +536,7 @@ grid_map.k_depth_scaling_factor
 - 16UC1 深度图，单位毫米：`k_depth_scaling_factor: 1000.0`
 - 32FC1 深度图，单位米：代码会转换，但仍建议实测确认
 
-## 9. 单独测试 ZsiBot 控制链路
+## 9. 单独测试旧 ZsiBot 控制链路（仅隔离迁移测试）
 
 ### 9.1 UDP proxy 模式
 
@@ -526,7 +544,7 @@ grid_map.k_depth_scaling_factor
 
 ```bash
 cd /app/rk_proxy
-./run_zsibot_sdk_proxy.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_zsibot_sdk_proxy.sh
 ```
 
 再在 Orin NX 上只启动 UDP client：
@@ -536,6 +554,7 @@ source /opt/ros/humble/setup.bash
 source ~/SCAN-Planner/install/setup.bash
 
 ros2 launch zsibot_cmd_bridge zsibot_cmd_udp_client.launch.py \
+  enable_deprecated_zsibot_transport:=true \
   cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
@@ -557,6 +576,7 @@ source /opt/ros/humble/setup.bash
 source ~/SCAN-Planner/install/setup.bash
 
 ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py \
+  enable_deprecated_zsibot_transport:=true \
   cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
@@ -789,17 +809,17 @@ ros2 topic echo /your/camera/odom --once
 - 如果方向反了，可以在 `zsibot_cmd_bridge` 里增加轴映射参数，或临时改桥接代码中的 `sendMove(vx, vy, yaw_rate)` 输入符号。
 - 不建议直接改 planner 坐标系，先把底盘桥接层调成符合 ROS 常规：`x` 前、`y` 左、`yaw` 左转为正。
 
-## 11. 推荐上板顺序
+## 11. 产品上板顺序
 
 1. Orin 能 ping/ssh RK3588。
-2. 优先使用 UDP proxy：RK3588 启动 `/app/rk_proxy/run_zsibot_sdk_proxy.sh`，不改 `sdk_config.yaml`。
-3. 如果不用 proxy，再把 RK3588 `sdk_config.yaml` 配好并重启运动控制。
-4. Orin 编译通过。
+2. RK3588 停止并禁用 `zsibot_sdk_proxy`、官方 SDK demo 等旧 owner。
+3. Orin 产品包确认不包含 `zsibot_cmd_bridge`/`zsibot_sdk_proxy` 产物。
+4. 启动 `rosdeck-robot-bridge.service`，确认 Gateway 与 safety supervisor 都存在。
 5. 启动 FAST_LIO，确认 `/state_estimation` 和 `/cloud_registered` 正常。
-6. 单独启动 `zsibot_cmd_udp_client` 或 `zsibot_cmd_bridge`。
-7. 手动发小 `/scan_planner/cmd_vel`，确认站立、前后、左右、旋转方向。
-8. 启动 planner，但先不要给目标点，观察是否有 odom/map。
-9. 给很近的目标点，低速测试。
+6. 启动 planner，但先不 arm supervisor、不给目标点，观察 odom/map 与仲裁状态。
+7. 现场确认后 arm supervisor，再显式 reset Gateway E-stop。
+8. 获取 navigation 控制权后发很近的目标点，低速验证方向和急停。
+9. 任务结束释放控制权，确认速度归零。
 10. 再逐步增大目标距离和速度限制。
 
 ## 12. 现场建议
@@ -812,7 +832,8 @@ ros2 topic echo /your/camera/odom --once
 - 纯追踪现场先用 `CONTROLLER_PURE_PURSUIT_SPEED=0.15~0.20`、
   `CONTROLLER_LOOKAHEAD_DIST=0.45~0.60`，确认能绕障碍后再加速度。
 - 保持急停/遥控器可用。
-- 避免同时运行官方 SDK demo 和 `zsibot_cmd_bridge`。
+- 禁止同时运行统一 Gateway、官方 SDK demo、`zsibot_cmd_bridge` 或
+  `zsibot_sdk_proxy` 中的任意两个 SDK owner；跨板状态必须由部署编排确认。
 - 每次改 RK3588 SDK 配置后都重启运动控制。
 - 如果现场网络不稳定，先不要跑 planner，先用 bridge 冒烟测试。
 
@@ -836,7 +857,7 @@ ORIN_NX_SYSROOT=/home/user/jetson/orin-nx/sysroot \
 
 1. 修补 sysroot 中 ROS2 CMake export 里的 `libpython3.10.so` 绝对路径。
 2. 使用 `tools/cross/orin_nx_toolchain.cmake` 调用 sysroot 里的 `aarch64-linux-gnu-gcc/g++`。
-3. 编译 `scan_planner` 和 `zsibot_cmd_bridge` 需要的依赖链。
+3. 默认只编译 `scan_planner` 需要的依赖链；旧 transport 不进入产品产物。
 
 成功后产物在：
 
@@ -848,7 +869,8 @@ install-orin-sysroot/
 
 ```bash
 file install-orin-sysroot/lib/scan_planner/scan_planner_node
-file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_bridge
+# 仅 BUILD_LEGACY_ZSIBOT_UDP_CLIENT=1 时：
+file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_udp_client
 ```
 
 正常应显示 `ELF 64-bit ... ARM aarch64`。

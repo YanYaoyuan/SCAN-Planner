@@ -2,6 +2,18 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT="${ENABLE_DEPRECATED_ZSIBOT_TRANSPORT:-0}"
+
+if [[ "${ENABLE_DEPRECATED_ZSIBOT_TRANSPORT}" != "0" && "${ENABLE_DEPRECATED_ZSIBOT_TRANSPORT}" != "1" ]]; then
+  echo "ERROR: ENABLE_DEPRECATED_ZSIBOT_TRANSPORT must be 0 or 1." >&2
+  exit 2
+fi
+
+USE_DEPRECATED_ZSIBOT_BRIDGE="false"
+if [[ "${ENABLE_DEPRECATED_ZSIBOT_TRANSPORT}" == "1" ]]; then
+  USE_DEPRECATED_ZSIBOT_BRIDGE="true"
+  echo "WARNING: enabling deprecated zsibot_cmd_bridge; stop the unified robot bridge first." >&2
+fi
 
 source /opt/ros/humble/setup.bash
 
@@ -15,6 +27,10 @@ elif [[ -f "${SCRIPT_DIR}/../../install/setup.bash" ]]; then
 else
   echo "ERROR: 找不到 ROS 2 工作空间 install/setup.bash。请先在 SCAN-Planner 根目录执行 colcon build。" >&2
   exit 1
+fi
+
+if [[ "${ENABLE_DEPRECATED_ZSIBOT_TRANSPORT}" == "0" ]]; then
+  "${SCRIPT_DIR}/assert_no_legacy_zsibot_owner.sh"
 fi
 
 CMD_VEL_TOPIC="${CMD_VEL_TOPIC:-/scan_planner/cmd_vel}"
@@ -125,7 +141,8 @@ exec ros2 launch scan_planner run.launch.py \
   manager_max_acc:="${PLANNER_MAX_ACC}" \
   use_gpu:=false \
   publish_robot_description:=false \
-  use_zsibot_bridge:=true \
+  enable_deprecated_zsibot_transport:="${USE_DEPRECATED_ZSIBOT_BRIDGE}" \
+  use_zsibot_bridge:="${USE_DEPRECATED_ZSIBOT_BRIDGE}" \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:="${LIDAR_ODOM_TOPIC}" \
   body_odom_topic:="${BODY_ODOM_TOPIC}" \

@@ -1,5 +1,9 @@
+# DEPRECATED / OPT-IN ONLY.
+# Do not run this forwarder alongside the product-level unified robot bridge.
 zsibot_cmd_udp_client:
   ros__parameters:
+    # The launch opt-in overrides this to true. Direct ros2 run stays disabled.
+    enable_deprecated_transport: false
     proxy_ip: "192.168.234.1"
     proxy_port: 44000
     publish_rate: 50.0

@@ -1,5 +1,8 @@
+# DEPRECATED / OPT-IN ONLY. Used only by run_matrix_planner.sh --control.
 zsibot_cmd_bridge:
   ros__parameters:
+    # run_matrix_planner.sh --control overrides this to true through the launch file.
+    enable_deprecated_transport: false
     # MATRiX runs the motion controller on the same host in the usual
     # simulation setup. local_port must match matrix/src/robot_mc/.../sdk_config.yaml.
     local_ip: "127.0.0.1"

@@ -8,6 +8,7 @@
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <algorithm>
+#include <chrono>
 #include <cv_bridge/cv_bridge.h>
 #include <cmath>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -92,8 +93,9 @@ struct MappingParameters {
   bool show_occ_time_;
 
   /* mapping sensor input */
-  string sensor_type_, sensor_frame_id_;
-  double lidar_sync_tolerance_;
+  string sensor_type_, sensor_frame_id_, cloud_frame_id_;
+  double lidar_sync_tolerance_, input_timeout_;
+  bool strict_frame_check_, strict_sync_check_;
   bool cloud_is_world_;
   bool need_extrinsic_;
   Eigen::Matrix4d lidar_extrinsic_;
@@ -129,6 +131,11 @@ struct MappingData {
   bool occ_need_update_;
   bool use_cloud_update_;
   bool has_first_depth_;
+  bool has_first_occupancy_update_;
+  bool has_last_occupancy_update_;
+  rclcpp::Time pending_observation_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_occupancy_observation_stamp_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point last_occupancy_update_time_;
   bool has_ray_pose_, has_cloud_;
 
   // depth image projected point cloud
@@ -228,6 +235,10 @@ public:
   bool hasDepthObservation();
   /** @brief Reports whether sensor odometry is valid. @return True after a valid pose. */
   bool odomValid();
+  /** @brief Reports whether a recent synchronized observation has completed an occupancy update. @return True when planning may safely start or continue. */
+  bool inputReady();
+  /** @brief Clears sensor/map readiness after a clock or input timeout reset. */
+  void resetInputReadiness();
   /** @brief Returns the active map region. @param[out] ori Minimum corner. @param[out] size Region size. */
   void getRegion(Eigen::Vector3d& ori, Eigen::Vector3d& size);
   /** @brief Returns voxel resolution. @return Resolution in meters. */

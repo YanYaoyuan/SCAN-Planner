@@ -1,0 +1,3 @@
+# dog3-only source dependencies. The dog3 build script opts into the three
+# package directories explicitly so normal Omni/CI builds keep using the ROS
+# underlay versions of cv_bridge, pcl_conversions and pcl_msgs.

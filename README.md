@@ -64,6 +64,83 @@ source install/setup.bash
 ros2 launch scan_planner rviz.launch.py
 ```
 
+## dog3 模式3：全局路径输入、局部路径输出
+
+融合后的 dog3 入口保留 Omni 新版 `SCANReplanFSM`、空间进度、安全心跳和
+点云/位姿时间同步，只启动规划节点，不启动 controller、仿真器或
+`robot_state_publisher`，因此不会新增 `cmd_vel` 发布端。
+
+dog3 ARM64 板端构建：
+
+```bash
+./2_build_dog3.sh
+```
+
+板端构建需要已有 Docker、`/app/opt/ros/humble` 和 `/app/idl_msgs`；运行时
+还需要 `/app_param`，厂家 `/app/script/env.sh` 存在时会自动加载其 Zenoh 配置。
+构建脚本会拒绝非 ARM64 主机，避免产出架构与镜像名不一致的二进制。
+
+构建产物单独放在 `install-dog3/`，不会污染普通 `install/`。检查并启动：
+
+```bash
+./1_run_scanplanner.sh --check
+./1_run_scanplanner.sh
+```
+
+固定接口为：
+
+- 里程计：`/relocalizing/map_frame/odometry`
+- 点云：`/lidar_points`
+- 全局路径：`/map_frame/global_path`
+- 局部路径：`/map_frame/local_path`（`nav_msgs/msg/Path`）
+- 新版调试轨迹：`/planning/bspline_v2`
+
+dog3 差异全部位于
+`src/planner/plan_manage/config/dog3.yaml`。启动文件会先加载通用
+`planner.yaml`，再应用 dog3 覆盖并完成 canonical topic remap。PC 录包回放
+也可使用：
+
+```bash
+source install/setup.bash
+ros2 launch scan_planner dog3_mode3.launch.py \
+  use_rviz:=true use_sim_time:=true
+```
+
+PC 开启 RViz 时可视化副本会把 `vita_lidar` 标记为与其物理重合的
+`lidar_frame`；算法输入仍保持原消息，并继续执行严格 frame 与时间戳检查。
+真 dog3 环境强制禁用 RViz。
+
+规划输入继续使用 Omni 的严格同步检查。当前 Dog3 契约要求 odom 的
+`header.frame_id=map_frame`、`child_frame_id=lidar_frame`，点云
+`header.frame_id=vita_lidar`，两者时间差不超过 0.05 秒；启动日志会打印这组
+期望值，并在不匹配时持续报出实际值。首次上板应先用真实话题/rosbag 核对，
+如硬件接口不同则修改 `dog3.yaml` 中的显式 frame 或同步容差。
+只有确认不同 frame 名物理等价、或确认时间偏差可接受时，才临时关闭
+`grid_map.strict_frame_check` / `grid_map.strict_sync_check`；兼容模式仍会持续告警。
+占据地图超过 2.0 秒未收到有效同步更新时，规划器会立即清空局部轨迹；新鲜
+点云恢复后，会重新验收最后一条已接受的全局路径。freshness 同时检查消息源
+时间戳和本机处理时间，executor 阻塞期间积压的旧点云不会因延迟处理而冒充
+新地图；首次上板仍需实测正常规划 P99，并让该阈值留有明确余量。
+dog3 的 odom watchdog 同样使用 2.0 秒预算并同时检查 source/processing age；
+底盘消费端自己的超时仍应更短，不能依赖规划器线程代替最终停车保护。
+
+已核到 Desktop 相邻的 `3_record_publish_path/publish_path.py` 当前把
+`/map_frame/global_path` 的消息 `frame_id` 写成 `lio_map`。本融合不会把两个
+frame 静默视为相同；上板前必须将发布端改为 `map_frame`，或提供可靠的
+`lio_map -> map_frame` TF，否则该全局路径会被拒绝。
+
+Desktop 版的 `scan_planner_msgs/msg/Bspline` 没有 `Header`，与 Omni 新消息
+不兼容。因此 dog3 必须全新构建并停止旧 planner endpoint；稳定的模块边界
+应使用 `/map_frame/local_path`，新版 B-spline 则隔离在
+`/planning/bspline_v2`。
+
+> **下游停车契约（上板硬条件）**：已核到 Desktop/0725 的旧
+> `7_moveforward/dog_move_forward.py` 会忽略空 `Path`，并永久复用上一条路径
+> 继续发布 `cmd_vel`；它不能直接与本入口搭配。dog3 的实际路径消费端必须在
+> 收到空 `/map_frame/local_path` 时立即清缓存并发布零速，还必须使用
+> steady-clock 路径接收超时（推荐再加 planner heartbeat 门控）。否则 planner
+> 崩溃、odom 超时或点云断流时都无法保证停车。
+
 RViz2 配置已适配 ROS 2 Humble：Go2 的 RobotModel 使用现有的 `meshes/base.dae`，Sliding Map Bounds 订阅 `/grid_map/sliding_map_bbox`，Goal 订阅 `/goal_point`。
 
 
@@ -84,34 +161,48 @@ ros2 launch scan_planner run.launch.py \
 
 实际硬件部署时，激光惯导里程计（LIO）、相机和宇树（Unitree）驱动均为外部依赖，默认启动会将规划器输入映射到 `/LIO/odom_vehicle`、`/LIO/odom_imu`、`/LIO/clouds_lidar` 话题以及 RealSense 对齐深度图话题，可根据实际安装的驱动栈修改话题重映射配置。
 
-### ZsiBot 机器狗桥接
+### 旧 ZsiBot 机器狗桥接（仅迁移兼容）
 
-仓库提供 `zsibot_cmd_bridge`，用于将规划器输出的速度命令转发到 ZsiBot HighLevel SDK。真机脚本默认使用隔离话题 `/scan_planner/cmd_vel`，避免和机器狗已有的 `/cmd_vel` 控制链路同时下发：
+`zsibot_cmd_bridge` 已进入下线阶段。SCAN-Planner 默认只向隔离话题
+`/scan_planner/cmd_vel` 发布速度，不启动旧桥、不持有厂商 SDK，也不再声明旧桥为
+运行依赖。产品部署应由统一 robot bridge 独占厂商 SDK。
+
+仅在迁移或隔离台架测试时显式编译旧包。Orin 侧推荐的 UDP client
+不持有厂商 SDK，因此保持 SDK targets 关闭：
 
 ```bash
 colcon build --symlink-install --packages-select zsibot_cmd_bridge \
-  --cmake-args -DCMAKE_BUILD_TYPE=Release
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+  -DZSIBOT_ENABLE_DEPRECATED_SDK_TARGETS=OFF
 ```
+
+只有 RK proxy 或 direct bridge 的隔离构建才使用
+`-DZSIBOT_ENABLE_DEPRECATED_SDK_TARGETS=ON`；这些产物不得进入默认产品包。
+同机 SDK owner 会竞争 `/run/lock/omni/zsibot_sdk_owner.lock` 并 fail-closed；
+该文件锁不能跨 Orin/RK 两块板，RK proxy 与 Orin Gateway 的互斥仍必须由部署
+清单和启动编排保证。
 
 默认型号为轮足 `zsl-1w`。点足型号可增加 `-DZSIBOT_MODEL=zsl-1`。默认 SDK 根目录为仓库根目录下的 `zsibot_sdk`，如 SDK 放在其他路径，可增加 `-DZSIBOT_SDK_ROOT=/absolute/path/to/zsibot_sdk`。
 
 有两种双板控制方式：
 
-1. 推荐先用“不修改 RK3588 配置”的 UDP proxy 方式。Orin NX 运行 ROS 2 UDP client，RK3588 运行一个轻量 proxy，本质上让 SDK 仍然在 RK 本机访问 `127.0.0.1:43988`：
+1. 仅在隔离迁移测试中，若要尽量少改 RK3588 配置，可使用旧 UDP proxy
+方式。Orin NX 运行 ROS 2 UDP client，RK3588 运行一个轻量 proxy，本质上让
+SDK 仍然在 RK 本机访问 `127.0.0.1:43988`：
 
 ```bash
-# RK3588
+# RK3588（旧链路必须显式确认）
 cd rk_proxy
-./run_zsibot_sdk_proxy.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_zsibot_sdk_proxy.sh
 
 # Orin NX
-./run_cmd_udp_client_only.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_cmd_udp_client_only.sh
 ```
 
 真机 planner 联动启动：
 
 ```bash
-./run_real_planner_udp.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_real_planner_udp.sh
 ```
 
 Orin 侧默认把 `/scan_planner/cmd_vel` 发送到 `192.168.234.1:44000`，配置文件是 `src/zsibot_cmd_bridge/config/zsibot_cmd_udp_client.yaml`。这种方式不需要修改 RK3588 的 `/opt/export/config/sdk_config.yaml`，但需要把打包产物里的 `rk_proxy/` 目录放到 RK3588 上并启动。
@@ -119,7 +210,8 @@ Orin 侧默认把 `/scan_planner/cmd_vel` 发送到 `192.168.234.1:44000`，配�
 2. 原来的直接桥接方式是 Orin NX 直接运行 SDK client：
 
 ```bash
-ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
+ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py \
+  enable_deprecated_zsibot_transport:=true
 ```
 
 或随真机规划一起启动：
@@ -127,7 +219,8 @@ ros2 launch zsibot_cmd_bridge zsibot_cmd_bridge.launch.py
 ```bash
 ros2 launch scan_planner run.launch.py \
   is_real_world:=true controller_mode:=closed_loop \
-  publish_robot_description:=false use_zsibot_bridge:=true
+  publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:=true use_zsibot_bridge:=true
 ```
 
 桥接参数位于 `src/zsibot_cmd_bridge/config/zsibot_cmd_bridge.yaml`。其中 `local_ip` 是 Orin NX 在机器人控制网段的 IP，`dog_ip` 是 RK3588 运动控制板 IP。当前默认值适配 Orin NX `192.168.234.234`、RK3588 `192.168.234.1`。RK3588 侧还需要将 `/opt/export/config/sdk_config.yaml` 的 `target_ip` 配成 Orin NX 的 IP，`target_port` 与桥接节点 `local_port` 保持一致。
@@ -143,6 +236,11 @@ cd /home/user/robot/SCAN-Planner
 ORIN_NX_SYSROOT=/home/user/jetson/orin-nx/sysroot tools/cross/build_orin_nx.sh
 ```
 
+该命令默认只构建 `scan_planner` 依赖链。临时兼容若只需要不持有厂商
+SDK 的 UDP 客户端，使用 `BUILD_LEGACY_ZSIBOT_UDP_CLIENT=1`；只有隔离台架
+才允许使用 `BUILD_DEPRECATED_ZSIBOT_SDK_TARGETS=1` 产出 direct bridge/proxy，
+且绝不能与统一 Gateway 同时运行。
+
 这套流程使用的是 sysroot 里的 `aarch64-linux-gnu-gcc/g++`。由于 sysroot 里的编译器是 ARM64 板端原生编译器，x86 开发机不能直接执行它，脚本会通过 `qemu-aarch64-static` wrapper 调用。实测在本机完成 `scan_planner` 和 `zsibot_cmd_bridge` 依赖链编译，输出目录为：
 
 ```bash
@@ -153,7 +251,8 @@ install-orin-sysroot/
 
 ```bash
 file install-orin-sysroot/lib/scan_planner/scan_planner_node
-file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_bridge
+# 仅 BUILD_LEGACY_ZSIBOT_UDP_CLIENT=1 时：
+file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_udp_client
 ```
 
 正常应显示 `ELF 64-bit ... ARM aarch64`。
@@ -198,8 +297,7 @@ ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
   navi_mode:=2 \
   keypoints_file:=/absolute/path/to/keypoints.yaml \
-  publish_robot_description:=false \
-  use_zsibot_bridge:=true
+  publish_robot_description:=false
 ```
 
 waypoint 坐标是 `odom` 坐标系下的绝对坐标。

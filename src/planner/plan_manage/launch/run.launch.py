@@ -4,7 +4,12 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
@@ -34,6 +39,9 @@ def _setup(context):
     controller_tracking_mode = LaunchConfiguration("controller_tracking_mode").perform(context)
     controller_drive_mode = LaunchConfiguration("controller_drive_mode").perform(context)
     keypoints_file = LaunchConfiguration("keypoints_file").perform(context)
+    enable_deprecated_zsibot_transport = _as_bool(
+        LaunchConfiguration("enable_deprecated_zsibot_transport").perform(context)
+    )
     use_zsibot_bridge = _as_bool(LaunchConfiguration("use_zsibot_bridge").perform(context))
     use_zsibot_udp_client = _as_bool(
         LaunchConfiguration("use_zsibot_udp_client").perform(context)
@@ -82,6 +90,12 @@ def _setup(context):
         )
     if use_zsibot_bridge and use_zsibot_udp_client:
         raise RuntimeError("use_zsibot_bridge and use_zsibot_udp_client cannot both be true")
+    if (use_zsibot_bridge or use_zsibot_udp_client) and not enable_deprecated_zsibot_transport:
+        raise RuntimeError(
+            "zsibot_cmd_bridge is deprecated and is no longer part of the default "
+            "SCAN-Planner control path. Use the unified robot bridge. For temporary "
+            "compatibility only, also set enable_deprecated_zsibot_transport:=true."
+        )
 
     if is_real:
         body_pose = LaunchConfiguration("real_body_pose_topic").perform(context)
@@ -211,6 +225,16 @@ def _setup(context):
     ):
         _set_optional_float(context, planner_overrides, launch_name, param_name)
     actions = []
+
+    if use_zsibot_bridge or use_zsibot_udp_client:
+        actions.append(
+            LogInfo(
+                msg=(
+                    "[DEPRECATED] Starting a legacy zsibot transport from SCAN-Planner. "
+                    "Only one process may own or forward commands to the vendor SDK."
+                )
+            )
+        )
 
     if is_real and use_global_path_publisher:
         if navi_mode != 3:
@@ -343,7 +367,11 @@ def _setup(context):
                     executable="zsibot_cmd_bridge",
                     name="zsibot_cmd_bridge",
                     output="screen",
-                    parameters=[zsibot_config_file, common],
+                    parameters=[
+                        zsibot_config_file,
+                        common,
+                        {"enable_deprecated_transport": True},
+                    ],
                     remappings=[("cmd_vel", cmd_vel)],
                 )
             )
@@ -359,7 +387,11 @@ def _setup(context):
                     executable="zsibot_cmd_udp_client",
                     name="zsibot_cmd_udp_client",
                     output="screen",
-                    parameters=[zsibot_udp_client_config_file, common],
+                    parameters=[
+                        zsibot_udp_client_config_file,
+                        common,
+                        {"enable_deprecated_transport": True},
+                    ],
                     remappings=[("cmd_vel", cmd_vel)],
                 )
             )
@@ -476,6 +508,9 @@ def generate_launch_description():
             DeclareLaunchArgument("use_pcd_map", default_value="false"),
             DeclareLaunchArgument("pcd_map_file", default_value=""),
             DeclareLaunchArgument("publish_robot_description", default_value="true"),
+            DeclareLaunchArgument(
+                "enable_deprecated_zsibot_transport", default_value="false"
+            ),
             DeclareLaunchArgument("use_zsibot_bridge", default_value="false"),
             DeclareLaunchArgument("use_zsibot_udp_client", default_value="false"),
             DeclareLaunchArgument("zsibot_config_file", default_value=""),

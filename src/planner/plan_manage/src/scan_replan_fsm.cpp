@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 #include <tf2/exceptions.h>
 #include <tf2/time.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -47,7 +48,9 @@ namespace scan_planner
     need_hover_stop_ = false;
     replan_fail_count_ = 0;
     last_freeze_update_time_ = node_->now();
-    last_odom_receive_time_ = node_->now();
+    last_odom_source_time_ = node_->now();
+    last_odom_callback_time_ = std::chrono::steady_clock::now();
+    use_sim_time_ = load_parameter<bool>(node_, "use_sim_time", false);
 
     /*  fsm param  */
     navi_mode_ = load_parameter<int>(node_, "fsm.navi_mode", -1);
@@ -55,6 +58,27 @@ namespace scan_planner
     no_replan_thresh_ = load_parameter<double>(node_, "fsm.thresh_no_replan", -1.0);
     planning_horizon_ = load_parameter<double>(node_, "fsm.planning_horizon", -1.0);
     emergency_time_ = load_parameter<double>(node_, "fsm.emergency_time", 1.0);
+    failure_retry_period_ =
+        load_parameter<double>(node_, "fsm.failure_retry_period", 0.2);
+    min_replan_period_ =
+        load_parameter<double>(node_, "fsm.min_replan_period", 0.2);
+    max_replan_period_ =
+        load_parameter<double>(node_, "fsm.max_replan_period", 2.0);
+    if (!std::isfinite(failure_retry_period_) || failure_retry_period_ < 0.0)
+      failure_retry_period_ = 0.2;
+    if (!std::isfinite(min_replan_period_) || min_replan_period_ < 0.0)
+      min_replan_period_ = 0.2;
+    if (!std::isfinite(max_replan_period_) || max_replan_period_ <= 0.0)
+      max_replan_period_ = 2.0;
+    if (max_replan_period_ < min_replan_period_)
+    {
+      RCLCPP_WARN(
+          node_->get_logger(),
+          "fsm.max_replan_period is smaller than fsm.min_replan_period; "
+          "using %.3f s",
+          min_replan_period_);
+      max_replan_period_ = min_replan_period_;
+    }
     enable_fail_safe_ = load_parameter<bool>(node_, "fsm.fail_safe", true);
     max_replan_fail_count_ = load_parameter<int>(node_, "fsm.max_replan_fail_count", 1000);
     self_inflation_z_up_ = load_parameter<double>(node_, "grid_map.obstacles_inflation_z_up", 0.0);
@@ -72,6 +96,10 @@ namespace scan_planner
     reference_path_min_length_ =
         std::max(reference_path_closed_tolerance_,
                  load_parameter<double>(node_, "fsm.reference_path_min_length", 1.0));
+    reference_path_same_tolerance_ = std::max(
+        0.0,
+        load_parameter<double>(
+            node_, "fsm.reference_path_same_tolerance", 0.02));
     reference_progress_max_advance_ =
         std::max(reference_path_min_point_spacing_,
                  load_parameter<double>(node_, "fsm.reference_progress_max_advance", 2.0));
@@ -223,6 +251,16 @@ namespace scan_planner
         load_parameter<double>(node_, "fsm.local_finish_speed", 0.06),
         0.0,
         0.50);
+    publish_local_path_ =
+        load_parameter<bool>(node_, "local_path.publish", false);
+    local_path_sample_dt_ = std::clamp(
+        load_parameter<double>(node_, "local_path.sample_dt", 0.10),
+        0.01,
+        1.0);
+    local_path_max_samples_ = std::clamp(
+        load_parameter<int>(node_, "local_path.max_samples", 10000),
+        2,
+        10000);
     local_trajectory_tracker_.setConfig(
         LocalTrajectoryTracker::Config{
             local_progress_max_advance_,
@@ -268,6 +306,12 @@ namespace scan_planner
 
     bspline_pub_ = node_->create_publisher<scan_planner_msgs::msg::Bspline>(
         "planning/bspline", rclcpp::QoS(1).reliable().transient_local());
+    if (publish_local_path_)
+    {
+      local_path_pub_ = node_->create_publisher<nav_msgs::msg::Path>(
+          "planning/local_path",
+          rclcpp::QoS(1).reliable().transient_local());
+    }
     planner_heartbeat_pub_ =
         node_->create_publisher<scan_planner_msgs::msg::PlannerHeartbeat>(
             "planning/planner_heartbeat",
@@ -410,8 +454,6 @@ namespace scan_planner
       return false;
     }
 
-    end_pt_ = waypoints.back();
-
     for (size_t i = 0; i < waypoints.size(); i++)
     {
       visualization_->displayGoalPoint(waypoints[i], Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, i);
@@ -430,6 +472,11 @@ namespace scan_planner
       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory from waypoints");
       return false;
     }
+
+    // Commit the replacement goal only after the complete polynomial route
+    // has been generated. A malformed update must not alter the endpoint of
+    // the route that is currently being executed.
+    end_pt_ = waypoints.back();
 
     // Do not truncate a supplied reference route merely because its final
     // point is currently occupied. Mode 3 handles occupancy on each local
@@ -507,14 +554,13 @@ namespace scan_planner
 
   bool SCANReplanFSM::prepareReferenceWaypoints(
       const std::vector<Eigen::Vector3d> &input,
-      std::vector<Eigen::Vector3d> &output)
+      std::vector<Eigen::Vector3d> &output,
+      bool &path_closed,
+      double &path_length)
   {
     output.clear();
-    reference_path_active_ = false;
-    reference_path_closed_ = false;
-    reference_path_total_length_ = 0.0;
-    reference_local_target_arc_length_ = 0.0;
-    reference_path_tracker_.clear();
+    path_closed = false;
+    path_length = 0.0;
 
     if (input.empty())
     {
@@ -522,7 +568,7 @@ namespace scan_planner
       return false;
     }
 
-    reference_path_closed_ =
+    path_closed =
         input.size() >= 2 &&
         (input.front().head<2>() - input.back().head<2>()).norm() <=
             reference_path_closed_tolerance_;
@@ -560,22 +606,22 @@ namespace scan_planner
     Eigen::Vector3d previous = odom_pos_;
     for (const auto &point : output)
     {
-      reference_path_total_length_ += (point - previous).norm();
+      path_length += (point - previous).norm();
       previous = point;
     }
 
-    if (reference_path_total_length_ < reference_path_min_length_)
+    if (path_length < reference_path_min_length_)
     {
       RCLCPP_ERROR(
           node_->get_logger(),
           "Reference path is too short after cleaning: %.3f m (minimum %.3f m)",
-          reference_path_total_length_,
+          path_length,
           reference_path_min_length_);
       output.clear();
       return false;
     }
 
-    if (reference_path_closed_ && output.size() < 3)
+    if (path_closed && output.size() < 3)
     {
       RCLCPP_ERROR(
           node_->get_logger(),
@@ -587,9 +633,9 @@ namespace scan_planner
     RCLCPP_INFO(
         node_->get_logger(),
         "Prepared %s reference path: %zu points, %.2f m",
-        reference_path_closed_ ? "closed" : "open",
+        path_closed ? "closed" : "open",
         output.size(),
-        reference_path_total_length_);
+        path_length);
     return true;
   }
 
@@ -712,8 +758,8 @@ namespace scan_planner
     }
     catch (const tf2::TransformException &ex)
     {
-      RCLCPP_ERROR(
-          node_->get_logger(),
+      RCLCPP_ERROR_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
           "Reject goal in frame '%s': cannot transform to planner frame '%s': %s",
           input.header.frame_id.c_str(), goal_frame_id_.c_str(), ex.what());
       return false;
@@ -729,16 +775,14 @@ namespace scan_planner
       return;
     }
 
-    if (!have_odom_)
+    if (!have_odom_ || !planner_manager_->grid_map_->inputReady())
     {
-      RCLCPP_WARN(
-          node_->get_logger(),
-          "Received reference path before a valid body_pose; caching it");
+      RCLCPP_WARN_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
+          "Reference path is waiting for valid body_pose and the first occupancy update");
       pending_reference_path_ = msg;
       return;
     }
-
-    trigger_ = true;
 
     std::vector<Eigen::Vector3d> raw_waypoints;
     raw_waypoints.reserve(msg->poses.size());
@@ -750,7 +794,13 @@ namespace scan_planner
       if (input_pose.header.frame_id.empty())
         input_pose.header.frame_id = msg->header.frame_id;
       if (!transformPoseToGoalFrame(input_pose, transformed_pose))
+      {
+        // TF may legitimately arrive after a transient-local route. Keep the
+        // sample pending so the FSM timer can retry without requiring the
+        // upstream publisher to send the same route again.
+        pending_reference_path_ = msg;
         return;
+      }
 
       Eigen::Vector3d wp;
       wp(0) = transformed_pose.pose.position.x;
@@ -759,10 +809,37 @@ namespace scan_planner
       raw_waypoints.push_back(wp);
     }
 
-    std::vector<Eigen::Vector3d> waypoints;
-    if (!prepareReferenceWaypoints(raw_waypoints, waypoints))
+    if (reference_path_active_ &&
+        raw_waypoints.size() == last_reference_input_.size())
     {
-      have_target_ = false;
+      bool same_path = true;
+      for (size_t index = 0; index < raw_waypoints.size(); ++index)
+      {
+        if ((raw_waypoints[index] - last_reference_input_[index]).norm() >
+            reference_path_same_tolerance_)
+        {
+          same_path = false;
+          break;
+        }
+      }
+      if (same_path)
+      {
+        RCLCPP_DEBUG_THROTTLE(
+            node_->get_logger(), *node_->get_clock(), 2000,
+            "Ignoring repeated reference path while the current route is active");
+        return;
+      }
+    }
+
+    std::vector<Eigen::Vector3d> waypoints;
+    bool candidate_path_closed = false;
+    double candidate_path_length = 0.0;
+    if (!prepareReferenceWaypoints(
+            raw_waypoints,
+            waypoints,
+            candidate_path_closed,
+            candidate_path_length))
+    {
       return;
     }
 
@@ -771,17 +848,22 @@ namespace scan_planner
     tracker_points.push_back(odom_pos_);
     tracker_points.insert(
         tracker_points.end(), waypoints.begin(), waypoints.end());
+    ReferencePathTracker candidate_tracker;
+    candidate_tracker.setConfig(
+        ReferencePathTracker::Config{
+            reference_progress_max_advance_,
+            reference_progress_movement_scale_,
+            reference_progress_movement_deadband_,
+            reference_progress_initial_credit_,
+            reference_departure_distance_});
     try
     {
-      reference_path_tracker_.reset(
-          tracker_points, reference_path_closed_, odom_pos_);
-      reference_path_total_length_ =
-          reference_path_tracker_.totalLength();
+      candidate_tracker.reset(
+          tracker_points, candidate_path_closed, odom_pos_);
+      candidate_path_length = candidate_tracker.totalLength();
     }
     catch (const std::invalid_argument &error)
     {
-      reference_path_tracker_.clear();
-      have_target_ = false;
       RCLCPP_ERROR(
           node_->get_logger(),
           "Unable to initialize reference progress tracker: %s",
@@ -793,6 +875,13 @@ namespace scan_planner
 
     if (success)
     {
+      trigger_ = true;
+      last_accepted_reference_path_ = msg;
+      last_reference_input_ = raw_waypoints;
+      reference_path_tracker_ = std::move(candidate_tracker);
+      reference_path_closed_ = candidate_path_closed;
+      reference_path_total_length_ = candidate_path_length;
+      reference_local_target_arc_length_ = 0.0;
       reference_path_active_ = true;
       planner_manager_->global_data_.last_progress_time_ = 0.0;
       /*** FSM ***/
@@ -812,9 +901,9 @@ namespace scan_planner
     }
     else
     {
-      reference_path_active_ = false;
-      reference_path_tracker_.clear();
-      RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory from reference path");
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Unable to generate replacement global trajectory; keeping the current route");
     }
   }
 
@@ -888,7 +977,19 @@ namespace scan_planner
     {
       reference_path_tracker_.update(odom_pos_);
     }
-    last_odom_receive_time_ = node_->now();
+    const rclcpp::Time odom_source_time(msg->header.stamp);
+    if (odom_source_time.nanoseconds() > 0)
+    {
+      last_odom_source_time_ = odom_source_time;
+    }
+    else
+    {
+      RCLCPP_WARN_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
+          "body_pose has a zero source timestamp; freshness falls back to callback time");
+      last_odom_source_time_ = node_->now();
+    }
+    last_odom_callback_time_ = std::chrono::steady_clock::now();
     odom_timeout_active_ = false;
     publishSelfInflationMarker();
     if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && pending_reference_path_)
@@ -1179,18 +1280,32 @@ namespace scan_planner
 
   void SCANReplanFSM::execFSMCallback()
   {
+    if (resetIfRosTimeJumpedBackward())
+      return;
+
     updateLocalTrajTimeFreeze();
 
+    const double odom_source_age =
+        (node_->now() - last_odom_source_time_).seconds();
+    const double odom_processing_age = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - last_odom_callback_time_).count();
     if (have_odom_ &&
-        (node_->now() - last_odom_receive_time_).seconds() > odom_timeout_)
+        (odom_source_age > odom_timeout_ ||
+         odom_processing_age > odom_timeout_))
     {
       if (!odom_timeout_active_)
       {
         RCLCPP_ERROR(
             node_->get_logger(),
-            "body_pose timed out (limit %.2fs); clearing target and trajectory",
-            odom_timeout_);
+            "body_pose timed out (source age %.3fs, processing age %.3fs, "
+            "limit %.2fs); clearing target and trajectory",
+            odom_source_age, odom_processing_age, odom_timeout_);
         publishTrajectoryClear("body_pose timeout");
+      }
+      if (navi_mode_ == NAVI_MODE::REFERENCE_PATH &&
+          reference_path_active_ && last_accepted_reference_path_)
+      {
+        pending_reference_path_ = last_accepted_reference_path_;
       }
       odom_timeout_active_ = true;
       have_odom_ = false;
@@ -1200,9 +1315,50 @@ namespace scan_planner
       active_waypoints_.clear();
       reference_path_active_ = false;
       reference_path_tracker_.clear();
+      local_reference_seed_.clear();
+      local_trajectory_tracker_.clear();
+      local_progress_traj_id_ = -1;
+      planner_manager_->grid_map_->resetBuffer();
+      planner_manager_->grid_map_->resetInputReadiness();
       preset_started_ = false;
       exec_state_ = FSM_EXEC_STATE::INIT;
       return;
+    }
+
+    const bool map_input_ready = planner_manager_->grid_map_->inputReady();
+    if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && have_odom_ &&
+        reference_path_active_ && have_target_ && !map_input_ready)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Occupancy input timed out; clearing trajectory until a fresh synchronized cloud arrives");
+      if (last_accepted_reference_path_)
+        pending_reference_path_ = last_accepted_reference_path_;
+      publishTrajectoryClear("occupancy input timeout");
+      trigger_ = false;
+      have_target_ = false;
+      have_new_target_ = false;
+      reference_path_active_ = false;
+      reference_path_tracker_.clear();
+      local_reference_seed_.clear();
+      local_trajectory_tracker_.clear();
+      local_progress_traj_id_ = -1;
+      planner_manager_->grid_map_->resetBuffer();
+      planner_manager_->grid_map_->resetInputReadiness();
+      exec_state_ = FSM_EXEC_STATE::INIT;
+      return;
+    }
+
+    // The first synchronized cloud is fused by a wall timer after its pose
+    // callback. Retry a cached mode-3 route here as soon as the occupancy map
+    // becomes ready; otherwise a paused bag or one-shot odometry source could
+    // leave the route waiting forever for another odometry message.
+    if (navi_mode_ == NAVI_MODE::REFERENCE_PATH &&
+        pending_reference_path_ && have_odom_ && map_input_ready)
+    {
+      auto pending_path = pending_reference_path_;
+      pending_reference_path_.reset();
+      pathCallback(pending_path);
     }
 
     static int fsm_num = 0;
@@ -1246,6 +1402,9 @@ namespace scan_planner
 
     case GEN_NEW_TRAJ:
     {
+      if (shouldDelayReplanRetry())
+        return;
+
       setStartStateFromOdomOrCurrentTraj();
 
       // Eigen::Vector3d rot_x = odom_orient_.toRotationMatrix().block(0, 0, 3, 1);
@@ -1262,13 +1421,13 @@ namespace scan_planner
       if (success)
       {
 
-        replan_fail_count_ = 0;
+        recordReplanSuccess();
         changeFSMExecState(EXEC_TRAJ, "FSM");
         flag_escape_emergency_ = true;
       }
       else
       {
-        replan_fail_count_++;
+        recordReplanFailure();
         changeFSMExecState(GEN_NEW_TRAJ, "FSM");
       }
       break;
@@ -1276,15 +1435,17 @@ namespace scan_planner
 
     case REPLAN_TRAJ:
     {
+      if (shouldDelayReplanRetry())
+        return;
 
       if (planFromCurrentTraj())
       {
-        replan_fail_count_ = 0;
+        recordReplanSuccess();
         changeFSMExecState(EXEC_TRAJ, "FSM");
       }
       else
       {
-        replan_fail_count_++;
+        recordReplanFailure();
         changeFSMExecState(REPLAN_TRAJ, "FSM");
       }
 
@@ -1317,7 +1478,7 @@ namespace scan_planner
           changeFSMExecState(GEN_NEW_TRAJ, "FSM");
           return;
         }
-        replan_fail_count_++;
+        recordReplanFailure();
         changeFSMExecState(GEN_NEW_TRAJ, "FSM");
         return;
       }
@@ -1330,6 +1491,7 @@ namespace scan_planner
           if (referencePathComplete())
           {
             reference_path_active_ = false;
+            last_accepted_reference_path_.reset();
             reference_path_tracker_.clear();
             have_target_ = false;
             changeFSMExecState(WAIT_TARGET, "REFERENCE_DONE");
@@ -1351,7 +1513,7 @@ namespace scan_planner
             changeFSMExecState(GEN_NEW_TRAJ, "FSM");
             return;
           }
-          replan_fail_count_++;
+          recordReplanFailure();
           changeFSMExecState(GEN_NEW_TRAJ, "FSM");
           return;
         }
@@ -1372,7 +1534,17 @@ namespace scan_planner
         // cout << "near end" << endl;
         return;
       }
-      else if ((info->start_pos_ - pos).norm() < replan_thresh_)
+      const double seconds_since_plan = have_successful_plan_time_
+          ? std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - last_successful_plan_time_)
+                .count()
+          : max_replan_period_;
+      if (seconds_since_plan < min_replan_period_)
+      {
+        return;
+      }
+      else if ((info->start_pos_ - pos).norm() < replan_thresh_ &&
+               seconds_since_plan < max_replan_period_)
       {
         // cout << "near start" << endl;
         return;
@@ -1403,6 +1575,7 @@ namespace scan_planner
           have_target_ = false;
           trigger_ = false;
           reference_path_active_ = false;
+          last_accepted_reference_path_.reset();
           reference_path_tracker_.clear();
           changeFSMExecState(WAIT_TARGET, "EMERGENCY_EXIT");
         }
@@ -1426,10 +1599,130 @@ namespace scan_planner
       RCLCPP_WARN(node_->get_logger(),
                   "Replan failed %d times; emergency stop and wait for a new target", replan_fail_count_);
       replan_fail_count_ = 0;
+      replan_retry_pending_ = false;
       need_hover_stop_ = true;
       flag_escape_emergency_ = true;
       changeFSMExecState(EMERGENCY_STOP, "finishProcess");
     }
+  }
+
+  bool SCANReplanFSM::shouldDelayReplanRetry()
+  {
+    if (!replan_retry_pending_)
+      return false;
+    if (std::chrono::steady_clock::now() < next_replan_retry_time_)
+      return true;
+    replan_retry_pending_ = false;
+    return false;
+  }
+
+  void SCANReplanFSM::recordReplanFailure()
+  {
+    ++replan_fail_count_;
+    if (failure_retry_period_ <= 0.0)
+    {
+      replan_retry_pending_ = false;
+      return;
+    }
+    next_replan_retry_time_ =
+        std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(failure_retry_period_));
+    replan_retry_pending_ = true;
+  }
+
+  void SCANReplanFSM::recordReplanSuccess()
+  {
+    replan_fail_count_ = 0;
+    replan_retry_pending_ = false;
+    last_successful_plan_time_ = std::chrono::steady_clock::now();
+    have_successful_plan_time_ = true;
+  }
+
+  bool SCANReplanFSM::resetIfRosTimeJumpedBackward()
+  {
+    if (!use_sim_time_ || !node_->get_clock()->ros_time_is_active())
+      return false;
+
+    const rclcpp::Time current_ros_time = node_->now();
+    if (!have_last_ros_time_)
+    {
+      if (current_ros_time.nanoseconds() > 0)
+      {
+        last_ros_time_ = current_ros_time;
+        have_last_ros_time_ = true;
+      }
+      return false;
+    }
+
+    constexpr int64_t kBackwardJumpThresholdNanoseconds = 500000000;
+    const int64_t backward_jump_nanoseconds =
+        last_ros_time_.nanoseconds() - current_ros_time.nanoseconds();
+    if (current_ros_time.nanoseconds() > 0)
+      last_ros_time_ = current_ros_time;
+    else
+      have_last_ros_time_ = false;
+    if (backward_jump_nanoseconds <= kBackwardJumpThresholdNanoseconds)
+      return false;
+
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "ROS time jumped backward by %.3f s; resetting rosbag planning state",
+        static_cast<double>(backward_jump_nanoseconds) * 1.0e-9);
+
+    trigger_ = false;
+    have_target_ = false;
+    have_new_target_ = false;
+    have_odom_ = false;
+    preset_started_ = false;
+    reference_path_active_ = false;
+    reference_path_closed_ = false;
+    go2_execution_frozen_ = false;
+    odom_timeout_active_ = false;
+    need_hover_stop_ = false;
+    flag_escape_emergency_ = true;
+    exec_state_ = FSM_EXEC_STATE::INIT;
+    continuously_called_times_ = 0;
+    replan_fail_count_ = 0;
+    replan_retry_pending_ = false;
+    have_successful_plan_time_ = false;
+    current_wp_ = 0;
+    active_waypoints_.clear();
+    local_reference_seed_.clear();
+    last_reference_input_.clear();
+    pending_reference_path_.reset();
+    last_accepted_reference_path_.reset();
+    reference_path_tracker_.clear();
+    local_trajectory_tracker_.clear();
+    local_progress_traj_id_ = -1;
+    last_freeze_update_time_ = current_ros_time;
+    last_odom_source_time_ = current_ros_time;
+    last_odom_callback_time_ = std::chrono::steady_clock::now();
+
+    if (planner_manager_->grid_map_)
+    {
+      planner_manager_->grid_map_->resetBuffer();
+      planner_manager_->grid_map_->resetInputReadiness();
+    }
+
+    LocalTrajData &local_data = planner_manager_->local_data_;
+    local_data.start_time_ = current_ros_time;
+    local_data.duration_ = 0.0;
+    local_data.progress_time_ = 0.0;
+    local_data.progress_arc_length_ = 0.0;
+
+    GlobalTrajData &global_data = planner_manager_->global_data_;
+    global_data.global_start_time_ = current_ros_time;
+    global_data.global_duration_ = 0.0;
+    global_data.local_traj_.clear();
+    global_data.local_start_time_ = -1.0;
+    global_data.local_end_time_ = -1.0;
+    global_data.time_increase_ = 0.0;
+    global_data.last_time_inc_ = 0.0;
+    global_data.last_progress_time_ = 0.0;
+
+    publishTrajectoryClear("ROS time jumped backward");
+    return true;
   }
 
   void SCANReplanFSM::publishTrajectoryClear(const std::string &reason)
@@ -1444,6 +1737,7 @@ namespace scan_planner
     bspline.traj_id = -1;
     bspline.start_time = bspline.header.stamp;
     bspline_pub_->publish(bspline);
+    publishLocalPathClear();
     local_trajectory_tracker_.clear();
     local_progress_traj_id_ = -1;
     planner_manager_->local_data_.progress_time_ = 0.0;
@@ -1452,6 +1746,72 @@ namespace scan_planner
     RCLCPP_INFO(node_->get_logger(),
                 "Published empty B-spline to clear controller trajectory: %s",
                 reason.c_str());
+  }
+
+  void SCANReplanFSM::publishLocalPath(UniformBspline position_traj)
+  {
+    if (!publish_local_path_ || !local_path_pub_)
+      return;
+
+    const double duration = position_traj.getTimeSum();
+    if (!std::isfinite(duration) || duration < 0.0)
+    {
+      RCLCPP_WARN(
+          node_->get_logger(),
+          "Skip local path publication: invalid trajectory duration");
+      return;
+    }
+
+    UniformBspline velocity_traj = position_traj.getDerivative();
+    nav_msgs::msg::Path path;
+    path.header.stamp = node_->now();
+    path.header.frame_id = self_inflation_frame_id_;
+
+    double last_yaw = getOdomYaw();
+    auto append_sample = [&](double sample_time) {
+      const Eigen::Vector3d position =
+          position_traj.evaluateDeBoorT(sample_time);
+      const Eigen::Vector3d velocity =
+          velocity_traj.evaluateDeBoorT(sample_time);
+      if (!position.allFinite() || !velocity.allFinite())
+        return;
+
+      if (velocity.head<2>().squaredNorm() > 1.0e-8)
+        last_yaw = std::atan2(velocity.y(), velocity.x());
+
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header = path.header;
+      pose.pose.position.x = position.x();
+      pose.pose.position.y = position.y();
+      pose.pose.position.z = position.z();
+      pose.pose.orientation.z = std::sin(last_yaw * 0.5);
+      pose.pose.orientation.w = std::cos(last_yaw * 0.5);
+      path.poses.push_back(pose);
+    };
+
+    int sample_count = 0;
+    for (double sample_time = 0.0;
+         sample_time < duration &&
+         sample_count < local_path_max_samples_ - 1;
+         sample_time += local_path_sample_dt_, ++sample_count)
+    {
+      append_sample(sample_time);
+    }
+    append_sample(duration);
+
+    if (!path.poses.empty())
+      local_path_pub_->publish(path);
+  }
+
+  void SCANReplanFSM::publishLocalPathClear()
+  {
+    if (!publish_local_path_ || !local_path_pub_)
+      return;
+
+    nav_msgs::msg::Path path;
+    path.header.stamp = node_->now();
+    path.header.frame_id = self_inflation_frame_id_;
+    local_path_pub_->publish(path);
   }
 
   bool SCANReplanFSM::planFromCurrentTraj()
@@ -1652,14 +2012,19 @@ namespace scan_planner
           return;
         }
 
+        if (shouldDelayReplanRetry())
+          return;
+
         if (planFromCurrentTraj()) // 仅远场障碍允许边执行边重规划。
         {
+          recordReplanSuccess();
           changeFSMExecState(EXEC_TRAJ, "SAFETY");
           return;
         }
 
         // 远场重规划失败，进入 REPLAN；若优化耗时超过 heartbeat timeout，
         // 控制器会独立清零，绝不继续无限执行最后一条轨迹。
+        recordReplanFailure();
         changeFSMExecState(REPLAN_TRAJ, "SAFETY");
         return;
       }
@@ -1729,6 +2094,7 @@ namespace scan_planner
       }
 
       bspline_pub_->publish(bspline);
+      publishLocalPath(info->position_traj_);
       publishPlannerHeartbeat();
 
       visualization_->displayOptimalTraj(info->position_traj_, 0);
@@ -1776,6 +2142,7 @@ namespace scan_planner
     }
 
     bspline_pub_->publish(bspline);
+    publishLocalPath(info->position_traj_);
     publishPlannerHeartbeat();
 
     return true;

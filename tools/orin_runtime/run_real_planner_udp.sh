@@ -3,6 +3,14 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+if [[ "${ENABLE_DEPRECATED_ZSIBOT_TRANSPORT:-0}" != "1" ]]; then
+  echo "ERROR: this legacy UDP transport is deprecated and disabled by default." >&2
+  echo "       Prefer the unified robot bridge. For a temporary migration test, run:" >&2
+  echo "       ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 $0" >&2
+  exit 2
+fi
+echo "WARNING: enabling deprecated zsibot UDP transport; stop the unified robot bridge first." >&2
+
 source /opt/ros/humble/setup.bash
 
 # 同时兼容独立 runtime 包和源码仓库内直接启动两种目录布局。
@@ -120,6 +128,7 @@ exec ros2 launch scan_planner run.launch.py \
   manager_max_acc:="${PLANNER_MAX_ACC}" \
   use_gpu:=false \
   publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_bridge:=false \
   use_zsibot_udp_client:=true \
   use_lidar_to_body_odom:=true \

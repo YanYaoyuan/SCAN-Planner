@@ -3,6 +3,7 @@
 /** @file grid_map.cpp @brief Implements map updates, inflation, and collision queries. */
 
 #include "plan_env/grid_map.h"
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -25,6 +26,12 @@ void load_parameter(rclcpp::Node *node, const std::string &name, T &value, const
   if (!node->has_parameter(name))
     node->declare_parameter<T>(name, default_value);
   node->get_parameter(name, value);
+}
+
+std::chrono::nanoseconds periodFromFrequency(const double frequency)
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / frequency));
 }
 }  // namespace
 
@@ -69,6 +76,27 @@ void GridMap::initMap(rclcpp::Node *node)
 
   load_parameter(node_, "grid_map.vis_height", mp_.vis_height_, 0.3);
   load_parameter(node_, "grid_map.show_occ_time", mp_.show_occ_time_, false);
+  double update_frequency = 20.0;
+  double visualization_frequency = 20.0;
+  load_parameter(
+      node_, "grid_map.update_frequency", update_frequency, 20.0);
+  load_parameter(
+      node_, "visualization.grid_map_frequency", visualization_frequency, 20.0);
+  if (!std::isfinite(update_frequency) || update_frequency <= 0.0)
+  {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "[GridMap] invalid update frequency; falling back to 20 Hz");
+    update_frequency = 20.0;
+  }
+  if (!std::isfinite(visualization_frequency) ||
+      visualization_frequency <= 0.0)
+  {
+    RCLCPP_WARN(
+        node_->get_logger(),
+        "[GridMap] invalid visualization frequency; falling back to 20 Hz");
+    visualization_frequency = 20.0;
+  }
 
   load_parameter(node_, "grid_map.frame_id", mp_.frame_id_, string("world"));
   load_parameter(node_, "grid_map.sliding_map_frame_id", mp_.sliding_map_frame_id_, string("sliding_map"));
@@ -76,13 +104,20 @@ void GridMap::initMap(rclcpp::Node *node)
 
   load_parameter(node_, "grid_map.sensor_type", mp_.sensor_type_, string("lidar"));
   load_parameter(node_, "grid_map.sensor_frame_id", mp_.sensor_frame_id_, string("livox_frame"));
+  load_parameter(node_, "grid_map.cloud_frame_id", mp_.cloud_frame_id_, string(""));
   load_parameter(node_, "grid_map.lidar_sync_tolerance", mp_.lidar_sync_tolerance_, 0.05);
+  load_parameter(node_, "grid_map.input_timeout", mp_.input_timeout_, 2.0);
+  load_parameter(node_, "grid_map.strict_frame_check", mp_.strict_frame_check_, true);
+  load_parameter(node_, "grid_map.strict_sync_check", mp_.strict_sync_check_, true);
   load_parameter(node_, "grid_map.cloud_is_world", mp_.cloud_is_world_, true);
   load_parameter(node_, "grid_map.need_extrinsic", mp_.need_extrinsic_, true);
   if (!std::isfinite(mp_.lidar_sync_tolerance_) ||
       mp_.lidar_sync_tolerance_ < 0.0)
     throw std::invalid_argument(
         "grid_map.lidar_sync_tolerance must be finite and non-negative");
+  if (!std::isfinite(mp_.input_timeout_) || mp_.input_timeout_ <= 0.0)
+    throw std::invalid_argument(
+        "grid_map.input_timeout must be finite and positive");
 
   mp_.lidar_extrinsic_ <<
       1.0, 0.0, 0.0, -0.01100,
@@ -101,6 +136,25 @@ void GridMap::initMap(rclcpp::Node *node)
     RCLCPP_ERROR(node_->get_logger(), "[GridMap] invalid grid_map.sensor_type: %s; falling back to lidar",
                  mp_.sensor_type_.c_str());
     mp_.sensor_type_ = "lidar";
+  }
+  if (mp_.sensor_type_ == "lidar")
+  {
+    const std::string expected_cloud_frame =
+        !mp_.cloud_frame_id_.empty()
+            ? mp_.cloud_frame_id_
+            : (mp_.cloud_is_world_ ? mp_.frame_id_ : mp_.sensor_frame_id_);
+    RCLCPP_INFO(
+        node_->get_logger(),
+        "[GridMap] strict lidar contract: pose parent='%s', pose child='%s', "
+        "cloud='%s', sync tolerance=%.3f s, input timeout=%.3f s, "
+        "strict frame=%s, strict sync=%s",
+        mp_.frame_id_.c_str(),
+        mp_.sensor_frame_id_.c_str(),
+        expected_cloud_frame.c_str(),
+        mp_.lidar_sync_tolerance_,
+        mp_.input_timeout_,
+        mp_.strict_frame_check_ ? "true" : "false",
+        mp_.strict_sync_check_ ? "true" : "false");
   }
 
   mp_.resolution_inv_ = 1 / mp_.resolution_;
@@ -185,10 +239,17 @@ void GridMap::initMap(rclcpp::Node *node)
       "body_pose", rclcpp::SensorDataQoS(),
       std::bind(&GridMap::slidingMapFrameCallback, this, std::placeholders::_1));
 
-  occ_timer_ = node_->create_wall_timer(std::chrono::milliseconds(50),
-                                        std::bind(&GridMap::updateOccupancyCallback, this));
-  vis_timer_ = node_->create_wall_timer(std::chrono::milliseconds(50),
-                                        std::bind(&GridMap::visCallback, this));
+  occ_timer_ = node_->create_wall_timer(
+      periodFromFrequency(update_frequency),
+      std::bind(&GridMap::updateOccupancyCallback, this));
+  vis_timer_ = node_->create_wall_timer(
+      periodFromFrequency(visualization_frequency),
+      std::bind(&GridMap::visCallback, this));
+  RCLCPP_INFO(
+      node_->get_logger(),
+      "[GridMap] timing: update=%.2f Hz, visualization=%.2f Hz",
+      update_frequency,
+      visualization_frequency);
 
   map_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("grid_map/occupancy", rclcpp::SensorDataQoS());
   map_inf_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("grid_map/occupancy_inflate", rclcpp::SensorDataQoS());
@@ -201,6 +262,11 @@ void GridMap::initMap(rclcpp::Node *node)
   md_.occ_need_update_ = false;
   md_.use_cloud_update_ = false;
   md_.has_first_depth_ = false;
+  md_.has_first_occupancy_update_ = false;
+  md_.has_last_occupancy_update_ = false;
+  md_.pending_observation_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  md_.last_occupancy_observation_stamp_ =
+      rclcpp::Time(0, 0, RCL_ROS_TIME);
   md_.has_ray_pose_ = false;
   md_.has_cloud_ = false;
   md_.image_cnt_ = 0;
@@ -778,6 +844,10 @@ void GridMap::updateOccupancyCallback()
     projectDepthImage();
   // t2 = ros::Time::now();
   raycastProcess();
+  md_.has_first_occupancy_update_ = true;
+  md_.last_occupancy_observation_stamp_ = md_.pending_observation_stamp_;
+  md_.last_occupancy_update_time_ = std::chrono::steady_clock::now();
+  md_.has_last_occupancy_update_ = true;
   // t3 = ros::Time::now();
 
   // t4 = ros::Time::now();
@@ -852,6 +922,7 @@ void GridMap::depthPoseCallback(const sensor_msgs::msg::Image::ConstSharedPtr &i
     md_.has_ray_pose_ = true;
     md_.update_num_ += 1;
     md_.occ_need_update_ = true;
+    md_.pending_observation_stamp_ = rclcpp::Time(img->header.stamp);
   }
   else
   {
@@ -902,40 +973,52 @@ void GridMap::lidarCloudPoseCallback(
   {
     RCLCPP_WARN_THROTTLE(
         node_->get_logger(), *node_->get_clock(), 2000,
-        "[GridMap] reject cloud/pose pair: timestamp difference %.3fs exceeds %.3fs",
-        stamp_error, mp_.lidar_sync_tolerance_);
-    return;
+        "[GridMap] cloud/pose timestamp difference %.3fs exceeds %.3fs (%s)",
+        stamp_error, mp_.lidar_sync_tolerance_,
+        mp_.strict_sync_check_ ? "rejecting" : "compatibility mode: accepting");
+    if (mp_.strict_sync_check_)
+      return;
   }
   if (pose->header.frame_id != mp_.frame_id_)
   {
     RCLCPP_ERROR_THROTTLE(
         node_->get_logger(), *node_->get_clock(), 2000,
-        "[GridMap] reject sensor_pose frame '%s'; expected '%s'",
-        pose->header.frame_id.c_str(), mp_.frame_id_.c_str());
-    return;
+        "[GridMap] sensor_pose frame '%s'; expected '%s' (%s)",
+        pose->header.frame_id.c_str(), mp_.frame_id_.c_str(),
+        mp_.strict_frame_check_ ? "rejecting" : "compatibility mode: accepting");
+    if (mp_.strict_frame_check_)
+      return;
   }
   if (!mp_.sensor_frame_id_.empty() &&
       pose->child_frame_id != mp_.sensor_frame_id_)
   {
     RCLCPP_ERROR_THROTTLE(
         node_->get_logger(), *node_->get_clock(), 2000,
-        "[GridMap] reject sensor_pose child '%s'; expected '%s'",
-        pose->child_frame_id.c_str(), mp_.sensor_frame_id_.c_str());
-    return;
+        "[GridMap] sensor_pose child '%s'; expected '%s' (%s)",
+        pose->child_frame_id.c_str(), mp_.sensor_frame_id_.c_str(),
+        mp_.strict_frame_check_ ? "rejecting" : "compatibility mode: accepting");
+    if (mp_.strict_frame_check_)
+      return;
   }
   const std::string expected_cloud_frame =
-      mp_.cloud_is_world_ ? mp_.frame_id_ : mp_.sensor_frame_id_;
+      !mp_.cloud_frame_id_.empty()
+          ? mp_.cloud_frame_id_
+          : (mp_.cloud_is_world_ ? mp_.frame_id_ : mp_.sensor_frame_id_);
   if (cloud->header.frame_id != expected_cloud_frame)
   {
     RCLCPP_ERROR_THROTTLE(
         node_->get_logger(), *node_->get_clock(), 2000,
-        "[GridMap] reject cloud frame '%s'; expected '%s'",
-        cloud->header.frame_id.c_str(), expected_cloud_frame.c_str());
-    return;
+        "[GridMap] cloud frame '%s'; expected '%s' (%s)",
+        cloud->header.frame_id.c_str(), expected_cloud_frame.c_str(),
+        mp_.strict_frame_check_ ? "rejecting" : "compatibility mode: accepting");
+    if (mp_.strict_frame_check_)
+      return;
   }
 
   sensorPoseCallback(pose);
   cloudCallback(cloud);
+  if (md_.occ_need_update_)
+    md_.pending_observation_stamp_ = rclcpp::Time(cloud->header.stamp);
 }
 
 void GridMap::slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &pose)
@@ -944,9 +1027,11 @@ void GridMap::slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstShared
   {
     RCLCPP_ERROR_THROTTLE(
         node_->get_logger(), *node_->get_clock(), 2000,
-        "[GridMap] reject body_pose frame '%s'; expected '%s'",
-        pose->header.frame_id.c_str(), mp_.frame_id_.c_str());
-    return;
+        "[GridMap] body_pose frame '%s'; expected '%s' (%s)",
+        pose->header.frame_id.c_str(), mp_.frame_id_.c_str(),
+        mp_.strict_frame_check_ ? "rejecting" : "compatibility mode: accepting");
+    if (mp_.strict_frame_check_)
+      return;
   }
   const geometry_msgs::msg::Point &pos = pose->pose.pose.position;
   md_.sliding_map_frame_pos_ = Eigen::Vector3d(pos.x, pos.y, pos.z);
@@ -1219,6 +1304,43 @@ void GridMap::publishUnknown()
 bool GridMap::odomValid() { return md_.has_ray_pose_; }
 
 bool GridMap::hasDepthObservation() { return md_.has_first_depth_; }
+
+bool GridMap::inputReady()
+{
+  const bool has_sensor_data =
+      mp_.sensor_type_ == "lidar" ? md_.has_cloud_ : md_.has_first_depth_;
+  const double source_age =
+      md_.has_last_occupancy_update_
+          ? (node_->now() - md_.last_occupancy_observation_stamp_).seconds()
+          : std::numeric_limits<double>::infinity();
+  const bool source_stamp_is_fresh =
+      std::isfinite(source_age) &&
+      source_age >= -mp_.lidar_sync_tolerance_ &&
+      source_age <= mp_.input_timeout_;
+  const bool processing_is_fresh =
+      md_.has_last_occupancy_update_ &&
+      std::chrono::duration<double>(
+          std::chrono::steady_clock::now() -
+          md_.last_occupancy_update_time_)
+              .count() <= mp_.input_timeout_;
+  return md_.has_ray_pose_ && has_sensor_data &&
+         md_.has_first_occupancy_update_ && source_stamp_is_fresh &&
+         processing_is_fresh;
+}
+
+void GridMap::resetInputReadiness()
+{
+  md_.has_ray_pose_ = false;
+  md_.has_cloud_ = false;
+  md_.has_first_depth_ = false;
+  md_.has_first_occupancy_update_ = false;
+  md_.has_last_occupancy_update_ = false;
+  md_.pending_observation_stamp_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  md_.last_occupancy_observation_stamp_ =
+      rclcpp::Time(0, 0, RCL_ROS_TIME);
+  md_.occ_need_update_ = false;
+  md_.use_cloud_update_ = false;
+}
 
 Eigen::Vector3d GridMap::getOrigin() { return mp_.map_origin_; }
 
