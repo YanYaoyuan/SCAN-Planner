@@ -1,0 +1,138 @@
+name: ROS 2 Humble CI
+
+on:
+  push:
+    branches: [main, ros2-community]
+  pull_request:
+    branches: [main, ros2-community]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  planner-build:
+    name: Planner build and test
+    runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      ROS_DISTRO: humble
+      ROS_WS: /tmp/scan_planner_ws
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reset CI workspace and local caches
+        run: |
+          rm -rf "${ROS_WS}"
+          rm -rf \
+            "${GITHUB_WORKSPACE}/build" \
+            "${GITHUB_WORKSPACE}/build-orin-sysroot" \
+            "${GITHUB_WORKSPACE}/install" \
+            "${GITHUB_WORKSPACE}/install-orin-sysroot" \
+            "${GITHUB_WORKSPACE}/log" \
+            /root/.cache/colcon \
+            /root/.cache/pip
+          mkdir -p "${ROS_WS}/src/SCAN-Planner"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            libarmadillo-dev \
+            libeigen3-dev \
+            libpcl-dev \
+            python3-colcon-common-extensions \
+            python3-rosdep \
+            rsync \
+            shellcheck
+          rosdep init || true
+          rosdep update --rosdistro "${ROS_DISTRO}"
+
+      - name: Prepare colcon workspace
+        run: |
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='build-orin-sysroot' \
+            --exclude='install' \
+            --exclude='install-orin-sysroot' \
+            --exclude='log' \
+            "${GITHUB_WORKSPACE}/" "${ROS_WS}/src/SCAN-Planner/"
+
+      - name: Install ROS package dependencies
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          rosdep install \
+            --from-paths "${ROS_WS}/src/SCAN-Planner/src/planner" \
+            --ignore-src \
+            --rosdistro "${ROS_DISTRO}" \
+            -r -y
+
+      - name: Release package-manager cache
+        run: |
+          apt-get clean
+          rm -rf /var/lib/apt/lists/* /root/.cache/pip /root/.cache/colcon
+          df -h
+
+      - name: Validate repository files
+        run: |
+          find . -type f -name '*.sh' -not -path './.git/*' -print0 \
+            | xargs -0 -r bash -n
+          find . -type f -name '*.sh' -not -path './.git/*' -print0 \
+            | xargs -0 -r shellcheck --severity=error
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          root = pathlib.Path('.')
+          for path in root.rglob('package.xml'):
+              ET.parse(path)
+          for path in root.rglob('*.py'):
+              if '.git' not in path.parts:
+                  compile(path.read_bytes(), str(path), 'exec')
+          PY
+
+      - name: Build planner packages
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          cd "${ROS_WS}"
+          rm -rf build install log
+          df -h
+          colcon build \
+            --packages-up-to scan_planner \
+            --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+      - name: Run planner tests
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          source "${ROS_WS}/install/setup.bash"
+          cd "${ROS_WS}"
+          colcon test \
+            --packages-select bspline_opt scan_planner \
+            --event-handlers console_direct+
+          colcon test-result --verbose
+
+      - name: Upload colcon logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colcon-logs-${{ github.run_id }}
+          path: /tmp/scan_planner_ws/log
+          retention-days: 3
