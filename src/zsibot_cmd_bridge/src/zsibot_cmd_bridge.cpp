@@ -8,10 +8,13 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
+
+#include "zsibot_cmd_bridge/sdk_owner_lock.hpp"
 
 #if defined(ZSIBOT_MODEL_ZSL_1)
 #include "zsl-1/highlevel.h"
@@ -32,6 +35,16 @@ public:
   /** @brief Loads network, safety, and command-limit parameters and initializes the SDK. */
   ZsiBotCmdBridge() : Node("zsibot_cmd_bridge")
   {
+    const bool enable_deprecated_transport =
+        declare_parameter<bool>("enable_deprecated_transport", false);
+    if (!enable_deprecated_transport)
+    {
+      throw std::runtime_error(
+          "Deprecated vendor SDK bridge is disabled. Use the unified robot bridge, "
+          "or explicitly set enable_deprecated_transport:=true for an isolated test.");
+    }
+    sdk_owner_lock_ = std::make_unique<SdkOwnerLock>("deprecated_zsibot_cmd_bridge");
+
     local_ip_ = declare_parameter<std::string>("local_ip", "192.168.234.234");
     dog_ip_ = declare_parameter<std::string>("dog_ip", "192.168.234.1");
     local_port_ = declare_parameter<int>("local_port", 43988);
@@ -261,6 +274,7 @@ private:
         timed_out ? 0.0 : vy_, timed_out ? 0.0 : yaw_rate_);
   }
 
+  std::unique_ptr<SdkOwnerLock> sdk_owner_lock_;
   zsibot_model::HighLevel highlevel_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
   rclcpp::TimerBase::SharedPtr timer_;

@@ -1,8 +1,9 @@
 # 巡检机器狗项目工程化分析与实施 TODO
 
 > 分析日期：2026-08-11  
+> Phase 0 实施更新：2026-08-14
 > 审查范围：`omni_slam`、`omni_slam/tools/global_path_tools`、`SCAN-Planner`、`rosdeck` 手机 App、`rosdeck_robot_bridge`、`omni_docking`  
-> 结论依据：当前工作区源码、启动文件、配置、部署脚本、现有测试与设计文档。本文是代码与架构审查，不等同于实机安全认证。
+> 结论依据：当前工作区源码、启动文件、配置、部署脚本、现有测试与设计文档。第 1~7 节保留初始问题基线，第 8 节和 Phase 0 实施记录跟踪当前完成情况。本文是代码与架构审查，不等同于实机安全认证。
 
 ## 1. 结论先行
 
@@ -24,11 +25,17 @@
 但距离产品化还有四个决定性缺口：
 
 1. **没有全局 Mission Manager。** 每个模块有自己的局部状态，但没有一个组件对“整台机器人现在在做什么、为什么能动、失败后怎么办”负责。
-2. **运动控制没有唯一出口。** `SCAN-Planner/zsibot_cmd_bridge` 和 App Bridge 都可能接触厂商 SDK；手动、巡检、回充也没有统一仲裁。这个问题必须先于功能扩展解决。
+2. **运动控制在初始审查时没有唯一出口。** `SCAN-Planner/zsibot_cmd_bridge` 和 App Bridge 都可能接触厂商 SDK；手动、巡检、回充也没有统一仲裁。该项已在 Phase 0 源码基线收敛，当前剩余门槛是 Humble/真机验证与不可伪造的强类型租约。
 3. **SLAM、路径、规划器只有技术接口，没有产品契约。** 缺少带任务 ID、反馈、取消、超时、错误码和持久化恢复的 Action/状态接口。
 4. **安全、可观测、部署、安全通信和验证体系不完整。** 当前可以靠人观察终端和手工重启恢复，产品必须依靠状态、告警、看门狗、日志和自动恢复。
 
 综合成熟度可粗略判断为 **35% 左右**。这里不是按代码量计算，而是按“能否长期、无人、可诊断地完成巡检任务”计算。
+
+### 2026-08-14 实施进展
+
+35% 是开始整改前的审查基线。本轮 Phase 0 已经把“双 Bridge/多 SDK owner”收敛为“唯一 Gateway + 三路速度仲裁 + 独立 Safety Supervisor”，并完成 App 控制权与两阶段急停复位、底盘标准遥测、SLAM 地图失败真实返回和定位失败快速退出。这使项目更接近**安全可控的内部样机**，但 Mission Manager、SLAM Manager、强类型协议、路线/地图资产、自动回充和真机故障注入仍未完成，因此尚不能按无人值守产品发布。具体代码证据和剩余验收门槛见 [`Phase0_工程化实施记录.md`](Phase0_工程化实施记录.md)。
+
+下表保留 2026-08-11 的初始成熟度快照；它用于解释排期与优先级，不是对 Phase 0 修复后代码的重复评分。
 
 | 维度 | 当前判断 | 说明 |
 | --- | --- | --- |
@@ -43,9 +50,9 @@
 | 测试与可靠性 | 中低 | App/Planner 有单测，跨模块、实机故障注入和长稳测试缺失 |
 | 安全与权限 | 很低 | 明文 WebSocket、全 ROS 图暴露、无用户鉴权/RBAC/审计 |
 
-## 2. 当前实际链路
+## 2. 审查初始链路与 Phase 0 收敛结果
 
-当前主要数据流可以概括为：
+2026-08-11 审查时的主要数据流可以概括为：
 
 ```mermaid
 flowchart LR
@@ -62,15 +69,36 @@ flowchart LR
     D["omni_docking 设计/上游代码"] -. 尚未集成 .-> SDK
 ```
 
+Phase 0 实施后，软件运动链路已收敛为：
+
+```mermaid
+flowchart LR
+    APP["手机 App / Teleop"] -->|"TwistStamped"| T["/omni/cmd_vel/teleop"]
+    NAV["SCAN Planner"] -->|"Twist"| N["/scan_planner/cmd_vel"]
+    DOCK["OpenNav Docking"] -. "opt-in remap / authority 待接" .-> D["/omni/cmd_vel/docking"]
+    SUP["Safety Supervisor"] --> E["/omni/safety/estop"]
+    T --> ARB["Bridge cmd_vel arbiter"]
+    N --> ARB
+    D --> ARB
+    E --> ARB
+    ARB --> F["/omni/cmd_vel/final"]
+    F --> GW["rosdeck_robot_bridge\n唯一 SDK owner"]
+    GW --> SDK["ZsiBot SDK / 底盘"]
+```
+
+这是当前已经在源码和静态契约中实现的软件边界，但还需要 Orin/Humble 完整构建、真实 DDS graph 和底盘故障注入来转化为产品验收结论。Docking 边仅表示可选话题 remap，不表示 `docking-*` authority 已实现。
+
 主要问题不在某一个算法，而在模块边界：
 
 - SLAM、规划器、App 都能各自运行，但没有统一启动顺序和 readiness gate；
 - 路线发布只表达几何点，不表达巡检点动作和任务语义；
 - App Bridge 主要面向手动控制，Planner Bridge 主要面向自动导航；
-- 回充设计假定存在 Mission Manager、`/battery_state` 和 Dock Actions，但当前代码中这些前置能力并不存在；
+- 回充仍缺 Mission Manager、Dock Actions、Docking authority 以及充电器/完整 BMS 信号；Phase 0 新增的 `/battery_state` 目前仅是 SDK SOC 百分比缓存和未知字段的标准载体；
 - 同一台机器人上的 ROS Domain、RMW、SDK 版本和外参配置没有单一事实来源。
 
 ## 3. 必须优先处理的 P0 问题
+
+> **初始审查快照：**本节记录 2026-08-11 的 P0 问题和当时的整改验收标准。P0-1/P0-2 的源码修复已进入 Phase 0 候选基线；当前完成状态以第 8 节和 Phase 0 实施记录为准。
 
 ### P0-1：两个 Bridge 会争用厂商 SDK，且没有统一控制仲裁
 
@@ -123,7 +151,7 @@ omni_robot_gateway（唯一 SDK owner）
 验收标准：
 
 - 任意速度发布源死亡后，最终 SDK 输出在 **300ms 内变为零**；
-- 任意 `NaN/Inf`、过期时间戳、非当前 owner 命令都被拒绝并触发诊断；
+- 任意 `NaN/Inf`、超过 250ms 的到达时效、非当前 owner 命令都被拒绝并触发诊断；手机 header stamp 目前只用于偏差诊断，待 NTP/时钟健康门完成后再开启强制拒绝；
 - deadband 后的零命令必须显式下发；
 - Gateway 重启、App 断网、Planner 崩溃、Foxglove 崩溃均通过故障注入测试；
 - 控制 owner、最后命令年龄、最终输出、SDK 连接状态可被外部查询。
@@ -167,7 +195,11 @@ Mission Manager 和 `cmd_vel_arbiter` 都必须把 `localization_state == LOCALI
 
 ## 4. 分模块代码审查
 
+> **初始审查快照：**本节保留整改前的代码证据，用于说明 TODO 来源，不应视为 2026-08-14 的当前缺陷清单。已修复项与剩余边界见第 8 节及 Phase 0 实施记录。
+
 ### 4.1 `omni_slam`
+
+> Phase 0 更新：地图保存误报、重复 ICP、两份 prior map 和定位进程退出后 launch 假健康已做源码级修复；原子地图资产、SLAM Manager、强类型状态和 rosbag/Humble 运行回归仍未完成。
 
 #### 已有优点
 
@@ -340,6 +372,8 @@ Result:
 
 ### 4.4 `rosdeck_robot_bridge`
 
+> Phase 0 更新：三路速度源、250ms watchdog、非有限值/零速停车、独立 Safety Supervisor、基础 BatteryState/诊断和回归测试已实现。当前剩余主要问题是 String 临时协议、可伪造 owner、Docking authority、完整 BMS、网络安全和真机验收。
+
 #### 已有优点
 
 - ZsiBot SDK 在 App 获取控制权前保持 idle；
@@ -378,11 +412,13 @@ flowchart LR
 
 ### 4.5 手机 App（`rosdeck`）
 
+> Phase 0 更新：App 已默认走统一 teleop 输入，实时校验 owner，完成旧 ZsiBot 布局能力迁移、双路安全状态过期门和两阶段急停复位。巡检任务、地图/路线资产、报告、登录/RBAC 和安全传输仍未实现。
+
 #### 已有优点
 
 - 传输层抽象支持 Foxglove/rosbridge；
 - 有自动重连、控制权租约、姿态命令、建图控制和通用 ROS 可视化组件；
-- 当前测试结果：**30 个测试套件、220 个测试全部通过**；
+- 当前测试结果：**33 个测试套件、260 个测试全部通过**；
 - TypeScript `tsc --noEmit` 当前通过。
 
 #### 明确缺陷
@@ -420,7 +456,7 @@ flowchart LR
 - 与统一 cmd arbiter、Mission Manager、电池状态联动；
 - 遮挡、反光、弱光、Tag 丢失、桩被占用、接触不良实测。
 
-设计文档中的方向基本正确，但应先完成 P0 的 Gateway、BatteryState 和 Mission Manager 骨架，再接入 Docking，避免 Docking 再造一套任务状态和底盘控制。
+设计文档中的方向基本正确。Phase 0 已提供 Gateway、基础 `/battery_state` 载体和可选 Docking `cmd_vel` remap；下一步仍要先完成 Mission Manager、`docking-*` authority、Dock Action 与真实充电确认，避免 Docking 再造一套任务状态和底盘控制。
 
 ## 5. 跨仓库工程问题
 
@@ -582,17 +618,24 @@ stateDiagram-v2
 
 ### Phase 0：安全止血与统一运行基线（1～2 周）
 
-- [ ] 指定 `rosdeck_robot_bridge` 为唯一 SDK owner，默认禁用 SCAN 内 Bridge；
-- [ ] 实现 `cmd_vel_arbiter`，接入 teleop、navigation、docking、safety 四类输入；
-- [ ] 修复 Gateway deadband 停车、`NaN/Inf`、限速和 300ms watchdog；
-- [ ] 发布标准 BatteryState、底盘连接、姿态、SDK 错误和最终控制 owner；
-- [ ] 修复 SLAM map save 误报成功；
-- [ ] 删除/禁用重复启动 ICP 的旧 launch；
-- [ ] 建立唯一产品 bringup，固定 Domain/RMW/frame/外参/速度参数；
-- [ ] 建立最小 E-stop/安全停车 topic 与硬件急停方案；
+- [x] 指定 `rosdeck_robot_bridge` 为唯一 SDK owner，默认禁用 SCAN 内 Bridge；
+- [x] 实现 `cmd_vel_arbiter`，接入 teleop、navigation、docking 三类速度输入和独立 E-stop 安全输入；
+- [x] 修复 Gateway deadband 停车、`NaN/Inf`、限速和 300ms watchdog；
+- [x] 发布基于 adapter 缓存的基础 BatteryState、底盘连接、姿态、SDK 错误和控制 owner（真实 BMS/充电信号待接入）；
+- [x] 修复 SLAM map save 误报成功；
+- [x] 删除/禁用重复启动 ICP 的旧 launch；
+- [x] 建立统一产品入口，官方 ZsiBot 部署默认启动 Gateway + Safety Supervisor；
+- [x] 提供显式启用的 OpenNav Docking scoped `cmd_vel` remap；
+- [ ] 实现 `docking-*` authority 申请/心跳/释放与 Docking lifecycle readiness 验收；
+- [ ] 在整机 bringup 固定 Domain/RMW/frame/外参和全模块速度参数；
+- [x] 建立最小 E-stop、安全监控心跳和两阶段复位协议；
+- [ ] 接入 GPIO/PLC 硬件急停与四足安全姿态策略；
 - [ ] 完成 App 断网、Planner 崩溃、Bridge 重启、SDK 断开故障注入测试。
 
 验收门槛：任何单节点/单网络链路故障都不会留下持续非零运动命令。
+
+当前代码实施、接口冻结、测试证据和剩余真机门槛见
+[`Phase0_工程化实施记录.md`](Phase0_工程化实施记录.md)。打勾仅表示代码与本地回归已完成；未经过 Orin/Humble 完整构建和真机故障注入的项目，不能视为产品验收完成。
 
 ### Phase 1：接口与 Mission Manager 骨架（3～5 周）
 
@@ -624,7 +667,7 @@ stateDiagram-v2
 
 - [ ] 实现 checkpoint 动作框架：停留、拍照、录像、识别、重试/跳过；
 - [ ] 巡检证据和结果关联 mission/checkpoint/pose/time/software version；
-- [ ] 实现标准 `/battery_state`、charger_connected 和充电电流确认；
+- [ ] 将 Phase 0 `/battery_state` 接入真实 BMS 电压/电流/温度，并补齐 charger_connected 与充电电流确认；
 - [ ] 落地 `omni_docking_msgs/core/controller/bringup`；
 - [ ] Docking 通过 arbiter 输出，不直接持有 SDK；
 - [ ] 实现 Undock、ReturnToDock、Dock、VerifyCharge 全链路；
@@ -649,6 +692,8 @@ stateDiagram-v2
 验收门槛：达到内部定义的连续任务成功率、回充成功率、人工干预率和故障恢复时间目标，并保留可审计数据。
 
 ## 9. 建议首版接口清单
+
+> 本表是 Phase 1/V1 的**目标接口草案，尚未全部实现**。Phase 0 当前运行接口、实际 `Twist`/`TwistStamped` 类型与 Bool 安全心跳见 Phase 0 实施记录的“接口冻结”表。
 
 | 接口 | 类型 | 生产者 | 消费者 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -724,6 +769,8 @@ topic 名可以调整，但职责和唯一运动出口不要改变。
 
 ## 12. 推荐立即执行的前两周清单
 
+> 以下是 2026-08-11 制定的原始实施顺序。其中唯一 SDK owner、速度仲裁/watchdog、SLAM 两项回归、App 统一遥控与产品 Gateway 基线已完成；未完成项以第 8 节勾选状态为准。
+
 第一周：
 
 1. 冻结新功能，画出当前实机所有速度发布者和 SDK client；
@@ -743,6 +790,8 @@ topic 名可以调整，但职责和唯一运动出口不要改变。
 6. 建立第一条端到端自动测试和一份实机验收表。
 
 ## 13. 关键代码证据索引
+
+> 以下是初始审查时的问题定位索引，部分缺陷已修复且行号会随补丁漂移。当前实现契约、测试证据和剩余风险以 Phase 0 实施记录为准。
 
 - SLAM 地图保存返回值被丢弃：`omni_slam/FAST_LIO/src/laserMapping.cpp:146-169, 1051-1054, 1342-1355`
 - 旧定位 launch 重复加入 ICP：`omni_slam/FAST_LIO/launch/relocalization.launch.py:74-87`

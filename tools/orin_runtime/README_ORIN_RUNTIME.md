@@ -9,6 +9,10 @@
 > 源码工作区直接运行时，请优先按
 > [`../../doc/局部路径闭环控制升级与真机测试指南.md`](../../doc/局部路径闭环控制升级与真机测试指南.md)
 > 操作。
+>
+> **旧控制链路只用于隔离迁移测试。** 产品运行时 RK3588 不启动
+> `zsibot_sdk_proxy`，Orin 只运行统一 robot bridge。文件锁只能保护同一主机，
+> 不能证明另一块板没有 SDK owner。
 
 ## 1. 解压
 
@@ -29,15 +33,17 @@ Orin NX 上需要有 ROS 2 Humble，以及和 sysroot 对应的 PCL/OpenCV/cv_br
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 pkg list | grep scan_planner
-ros2 pkg list | grep zsibot_cmd_bridge
 ```
 
 确认产物是 ARM64：
 
 ```bash
 file install/lib/scan_planner/scan_planner_node
-file install/lib/zsibot_cmd_bridge/zsibot_cmd_bridge
 ```
+
+默认产品包不应包含 `zsibot_cmd_bridge` 或 `zsibot_sdk_proxy`。只有显式构建
+UDP 兼容客户端时，才额外检查
+`install/lib/zsibot_cmd_bridge/zsibot_cmd_udp_client`。
 
 ## 3. 先测试 Orin 到 RK3588 网络
 
@@ -50,12 +56,12 @@ ssh 192.168.234.1
 
 Orin NX 的控制网 IP 默认按 `192.168.234.234` 配置，RK3588 默认按 `192.168.234.1` 配置。
 
-## 4. 只启动控制桥接
+## 4. 只启动旧控制桥接（仅隔离迁移测试）
 
 如果你愿意修改 RK3588 的 `/opt/export/config/sdk_config.yaml`，可以用原来的直接桥接模式。先不要启动 planner，单独测试 `/scan_planner/cmd_vel` 到 SDK：
 
 ```bash
-./run_bridge_only.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_bridge_only.sh
 ```
 
 另开终端发小速度：
@@ -88,7 +94,7 @@ Orin /scan_planner/cmd_vel
 
 ```bash
 cd /app/rk_proxy
-./run_zsibot_sdk_proxy.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_zsibot_sdk_proxy.sh
 ```
 
 正常应看到：
@@ -105,7 +111,7 @@ standUp state confirmed: ctrlmode=1; move commands enabled
 
 ```bash
 cd /app/scan_planner_orin_nx_aarch64_20260719
-./run_cmd_udp_client_only.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_cmd_udp_client_only.sh
 ```
 
 另开 Orin 终端发小速度：
@@ -141,10 +147,14 @@ ros2 topic echo /cloud_registered --once
 ./run_real_planner.sh
 ```
 
+该通用脚本默认只启动规划和控制器，由统一 robot bridge 消费
+`/scan_planner/cmd_vel`，不会启动旧 `zsibot_cmd_bridge`。仅在临时迁移测试时
+使用 `ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_real_planner.sh`。
+
 如果采用“不修改 RK 配置”的 UDP proxy 模式，先保持 RK 上的 `run_zsibot_sdk_proxy.sh` 运行，然后在 Orin 上用：
 
 ```bash
-./run_real_planner_udp.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_real_planner_udp.sh
 ```
 
 当前两个真机启动脚本使用的主要映射：
@@ -160,13 +170,14 @@ ros2 topic echo /cloud_registered --once
 - `goal_frame_id:=lio_odom`
 - `real_cloud_is_world:=true`
 - `real_need_extrinsic:=false`
-- `run_real_planner.sh`：`use_zsibot_bridge:=true`
-- `run_real_planner_udp.sh`：`use_zsibot_udp_client:=true`
+- `run_real_planner.sh`：默认两个旧 transport 均为 `false`
+- `run_real_planner_udp.sh`：显式确认后才设置 `use_zsibot_udp_client:=true`
 
 如果新狗上 LIO、TF、点云话题不同，优先改 `run_real_planner.sh` 里的这些 launch 参数。
 使用 UDP proxy 模式时则改 `run_real_planner_udp.sh`。两个脚本也支持环境变量覆盖，例如：
 
 ```bash
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 \
 GRID_FRAME_ID=lio_odom \
 BODY_TO_SENSOR_X=0.12 \
 BODY_TO_SENSOR_Y=0.00 \
@@ -179,6 +190,7 @@ BODY_TO_SENSOR_Z=0.18 \
 `angular.z`，`linear.y` 强制为 0，避免把机器狗当作稳定全向底盘。现场可以这样低速调：
 
 ```bash
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 \
 CONTROLLER_PURE_PURSUIT_SPEED=0.15 \
 CONTROLLER_LOOKAHEAD_DIST=0.50 \
 CONTROLLER_MAX_VYAW=0.5 \
@@ -188,6 +200,7 @@ CONTROLLER_MAX_VYAW=0.5 \
 如果要和旧的全向输出对比，临时加：
 
 ```bash
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 \
 CONTROLLER_DRIVE_MODE=omni ./run_real_planner_udp.sh
 ```
 
@@ -212,6 +225,7 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_udp_client:=true \
   real_cmd_vel_topic:=/scan_planner/cmd_vel \
   real_sensor_pose_topic:=/state_estimation \
@@ -232,6 +246,7 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_udp_client:=true \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
@@ -301,6 +316,7 @@ ros2 launch scan_planner run.launch.py \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   publish_robot_description:=false \
+  enable_deprecated_zsibot_transport:=true \
   use_zsibot_bridge:=true \
   use_lidar_to_body_odom:=true \
   lidar_odom_topic:=/state_estimation \
@@ -323,6 +339,9 @@ ros2 launch scan_planner run.launch.py \
 ```bash
 use_zsibot_udp_client:=true
 ```
+
+同时保留 `enable_deprecated_zsibot_transport:=true`；它是旧 direct/UDP 两种
+兼容模式共同的二次确认开关。
 # 当前真机默认接口（lio_map）
 
 > **请优先按本节以及真机测试指南操作。** 本节之前出现的

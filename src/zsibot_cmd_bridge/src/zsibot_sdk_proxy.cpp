@@ -26,6 +26,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "zsibot_cmd_bridge/sdk_owner_lock.hpp"
+
 #if defined(ZSIBOT_MODEL_ZSL_1)
 #include "zsl-1/highlevel.h"
 namespace zsibot_model = mc_sdk::zsl_1;
@@ -61,6 +63,7 @@ double clampFinite(double value, double limit)
 /** @brief Command-line and SDK networking options for the proxy process. */
 struct Options
 {
+  bool enable_deprecated_transport{false};
   std::string listen_ip{"0.0.0.0"};
   int listen_port{44000};
   std::string sdk_local_ip{"127.0.0.1"};
@@ -124,6 +127,7 @@ void printUsage(const char* argv0)
 {
   std::cerr
       << "usage: " << argv0 << " [options]\n"
+      << "  --enable-deprecated-transport REQUIRED explicit compatibility opt-in\n"
       << "  --listen-ip IP                 UDP listen IP, default 0.0.0.0\n"
       << "  --listen-port PORT             UDP listen port, default 44000\n"
       << "  --sdk-local-ip IP              SDK local IP, default 127.0.0.1\n"
@@ -151,6 +155,7 @@ Options parseOptions(int argc, char** argv)
       printUsage(argv[0]);
       std::exit(0);
     }
+    else if (arg == "--enable-deprecated-transport") options.enable_deprecated_transport = true;
     else if (arg == "--listen-ip") ok = readOption(argc, argv, i, options.listen_ip);
     else if (arg == "--listen-port") ok = readOption(argc, argv, i, options.listen_port);
     else if (arg == "--sdk-local-ip") ok = readOption(argc, argv, i, options.sdk_local_ip);
@@ -171,6 +176,10 @@ Options parseOptions(int argc, char** argv)
       throw std::runtime_error("missing value for argument: " + arg);
   }
 
+  if (!options.enable_deprecated_transport)
+    throw std::runtime_error(
+        "deprecated SDK proxy is disabled; pass --enable-deprecated-transport "
+        "only for an isolated compatibility test");
   if (options.listen_port <= 0 || options.listen_port > 65535)
     throw std::runtime_error("listen_port must be in 1..65535");
   if (options.sdk_local_port <= 0 || options.sdk_local_port > 65535)
@@ -245,6 +254,7 @@ int main(int argc, char** argv)
   try
   {
     const Options options = parseOptions(argc, argv);
+    const zsibot_cmd_bridge::SdkOwnerLock sdk_owner_lock("deprecated_zsibot_sdk_proxy");
     const int udp_fd = createUdpSocket(options);
 
     std::cout << "ZsiBot SDK proxy listening on " << options.listen_ip << ':'

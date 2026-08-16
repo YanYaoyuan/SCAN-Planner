@@ -90,6 +90,7 @@ install(PROGRAMS scripts/keypoint_recorder.py
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(launch_testing_ament_cmake REQUIRED)
   ament_add_gtest(test_reference_path_tracker
     test/test_reference_path_tracker.cpp)
@@ -123,6 +124,9 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_planner_heartbeat_gate builtin_interfaces)
   add_launch_test(test/test_planner_startup.py TIMEOUT 30)
   add_launch_test(test/test_waypoint_parameters.py TIMEOUT 30)
+  ament_add_pytest_test(test_legacy_zsibot_opt_in
+    test/test_legacy_zsibot_opt_in.py
+    TIMEOUT 30)
 endif()
 
 ament_package()

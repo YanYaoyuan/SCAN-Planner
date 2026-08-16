@@ -47,6 +47,15 @@ public:
   /** @brief Loads UDP and safety parameters, opens the socket, and creates ROS interfaces. */
   ZsiBotCmdUdpClient() : Node("zsibot_cmd_udp_client")
   {
+    const bool enable_deprecated_transport =
+        declare_parameter<bool>("enable_deprecated_transport", false);
+    if (!enable_deprecated_transport)
+    {
+      throw std::runtime_error(
+          "Deprecated ZsiBot UDP transport is disabled. Use the unified robot bridge, "
+          "or explicitly set enable_deprecated_transport:=true for an isolated test.");
+    }
+
     proxy_ip_ = declare_parameter<std::string>("proxy_ip", "192.168.234.1");
     proxy_port_ = declare_parameter<int>("proxy_port", 44000);
     publish_rate_ = declare_parameter<double>("publish_rate", 50.0);

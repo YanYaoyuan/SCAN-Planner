@@ -1,5 +1,8 @@
 # ZsiBot RK3588 SDK Proxy
 
+> **已弃用，仅兼容迁移使用。** 产品运行时应由统一 robot bridge 独占厂商
+> SDK。下面的旧 proxy 需要显式设置确认变量，且不得与统一 bridge 同时运行。
+
 这个目录用于“不修改 RK3588 `/opt/export/config/sdk_config.yaml`”的双板控制方案。
 
 运行位置：
@@ -29,7 +32,7 @@ target_port: 43988
 
 ```bash
 cd rk_proxy
-./run_zsibot_sdk_proxy.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_zsibot_sdk_proxy.sh
 ```
 
 正常日志应包含：

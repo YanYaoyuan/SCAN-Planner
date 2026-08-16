@@ -101,15 +101,17 @@ SCAN-Planner。
 
 ```bash
 cd /Users/yan/WorkSpace/Omni/SCAN-Planner
-./tools/orin_runtime/run_real_planner.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./tools/orin_runtime/run_real_planner.sh
 ```
 
 UDP：
 
 ```bash
 cd /Users/yan/WorkSpace/Omni/SCAN-Planner
-./tools/orin_runtime/run_real_planner_udp.sh
+ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./tools/orin_runtime/run_real_planner_udp.sh
 ```
+
+以上两种均为旧兼容链路；当前产品默认由统一 robot bridge 独占厂商 SDK。
 
 然后在 RViz 发布 2D Goal。`global_path_publisher` 会使用当前
 `/body_state_estimation_global` 作为起点，发布 `/planning/global_path`。
