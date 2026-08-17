@@ -135,6 +135,9 @@ namespace scan_planner
     int current_wp_;
     double reference_path_total_length_{0.0};
     double reference_local_target_arc_length_{0.0};
+    bool follow_route_cancel_pending_{false};
+    double follow_route_speed_scale_{1.0};
+    RouteOutcome last_reference_route_outcome_{RouteOutcome::NONE};
 
     bool flag_escape_emergency_;
 
@@ -246,6 +249,61 @@ namespace scan_planner
 
     /** @brief Loads parameters and creates ROS/planning modules. @param node Owning ROS node. */
     void init(rclcpp::Node *node);
+
+    /** @brief Terminal outcome of the last accepted reference route. */
+    enum class RouteOutcome
+    {
+      NONE = 0,
+      SUCCEEDED = 1,
+      ABORTED = 2,
+      LOCALIZATION_LOST = 3,
+    };
+
+    /** @brief Immutable FSM snapshot consumed by the FollowRoute action
+     *  server. */
+    struct FollowRouteView
+    {
+      bool have_odom = false;
+      bool route_active = false;
+      bool in_emergency_stop = false;
+      bool motion_active = false;
+      double progress_ratio = 0.0;
+      double planar_speed = 0.0;
+      int exec_state = 0;
+      RouteOutcome route_outcome = RouteOutcome::NONE;
+    };
+
+    /** @brief Tests whether the node runs in reference route mode.
+     *  @return True when navi_mode is REFERENCE_PATH. */
+    bool isReferencePathMode() const;
+
+    /** @brief Tests whether a valid body_pose has been received and is not
+     *  stale. @return True when odometry is usable for planning. */
+    bool hasValidOdom() const;
+
+    /** @brief Accepts a reference route through the mode-3 pipeline.
+     *  @param path Route waypoints in the goal frame.
+     *  @return True when the route became active. */
+    bool startFollowRoute(const nav_msgs::msg::Path &path);
+
+    /** @brief Requests a controlled stop for the active route (decelerate
+     *  through the normal pipeline; NOT an emergency stop). No-op when no
+     *  route is active. */
+    void cancelFollowRoute();
+
+    /** @brief Clears the pending cancel flag. Idempotent. */
+    void resetFollowRouteCancel();
+
+    /** @brief Applies the FollowRoute speed scale to the current route.
+     *  @param scale 1.0 for the planner default. */
+    void setFollowRouteSpeedScale(double scale);
+
+    /** @brief Returns the latest body pose in the odometry frame. */
+    geometry_msgs::msg::PoseStamped currentOdomPose() const;
+
+    /** @brief Returns the FSM snapshot consumed by the FollowRoute action
+     *  server. */
+    FollowRouteView followRouteView() const;
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   };

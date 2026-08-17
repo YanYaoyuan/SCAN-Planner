@@ -27,6 +27,8 @@ jobs:
       ROS_DISTRO: humble
       ROS_WS: /tmp/scan_planner_ws
       DEBIAN_FRONTEND: noninteractive
+      OMNI_ROBOT_INTERFACES_REPO: https://github.com/lifliu/omni_robot_interfaces.git
+      OMNI_ROBOT_INTERFACES_REF: main
 
     steps:
       - name: Checkout
@@ -75,12 +77,19 @@ jobs:
             --exclude='log' \
             "${GITHUB_WORKSPACE}/" "${ROS_WS}/src/SCAN-Planner/"
 
+      - name: Fetch omni_robot_interfaces
+        run: |
+          git clone --depth 1 --branch "${OMNI_ROBOT_INTERFACES_REF}" \
+            "${OMNI_ROBOT_INTERFACES_REPO}" \
+            "${ROS_WS}/src/omni_robot_interfaces"
+
       - name: Install ROS package dependencies
         run: |
           source "/opt/ros/${ROS_DISTRO}/setup.bash"
           rosdep install \
             --from-paths "${ROS_WS}/src/SCAN-Planner/src/planner" \
             --ignore-src \
+            --skip-keys omni_robot_interfaces \
             --rosdistro "${ROS_DISTRO}" \
             -r -y
 

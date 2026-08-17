@@ -6,6 +6,7 @@
 #include <exception>
 
 #include <rclcpp/rclcpp.hpp>
+#include <plan_manage/follow_route_server.h>
 #include <plan_manage/scan_replan_fsm.h>
 
 /** @brief Runs the SCAN planner ROS node. @param argc Argument count. @param argv Argument vector. @return Process exit status. */
@@ -18,6 +19,16 @@ int main(int argc, char **argv)
   {
     scan_planner::SCANReplanFSM planner;
     planner.init(node.get());
+
+    // The FollowRoute action server drives the same reference-route pipeline
+    // as /initial_path; it is only created in route-following mode (3).
+    std::unique_ptr<scan_planner::FollowRouteServer> follow_route_server;
+    if (planner.isReferencePathMode())
+    {
+      follow_route_server =
+          std::make_unique<scan_planner::FollowRouteServer>(node, &planner);
+    }
+
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
     executor.spin();

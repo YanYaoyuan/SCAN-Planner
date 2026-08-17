@@ -13,9 +13,11 @@ find_package(builtin_interfaces REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(omni_robot_interfaces REQUIRED)
 find_package(path_searching REQUIRED)
 find_package(plan_env REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(scan_planner_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -57,13 +59,14 @@ if(SCAN_PLANNER_LAPACK_LIBRARY AND SCAN_PLANNER_BLAS_LIBRARY)
 endif()
 
 set(scan_planner_dependencies
-  ament_index_cpp bspline_opt builtin_interfaces geometry_msgs nav_msgs path_searching plan_env
-  rclcpp scan_planner_msgs sensor_msgs std_msgs tf2 tf2_geometry_msgs tf2_ros
-  traj_utils visualization_msgs)
+  ament_index_cpp bspline_opt builtin_interfaces geometry_msgs nav_msgs omni_robot_interfaces
+  path_searching plan_env rclcpp rclcpp_action scan_planner_msgs sensor_msgs std_msgs
+  tf2 tf2_geometry_msgs tf2_ros traj_utils visualization_msgs)
 
 add_executable(scan_planner_node
   src/scan_planner_node.cpp
   src/scan_replan_fsm.cpp
+  src/follow_route_server.cpp
   src/planner_manager.cpp)
 target_include_directories(scan_planner_node PRIVATE include)
 ament_target_dependencies(scan_planner_node ${scan_planner_dependencies})

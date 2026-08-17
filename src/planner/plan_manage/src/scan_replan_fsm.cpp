@@ -738,19 +738,24 @@ namespace scan_planner
       return;
     }
 
+    startFollowRoute(*msg);
+  }
+
+  bool SCANReplanFSM::startFollowRoute(const nav_msgs::msg::Path &path)
+  {
     trigger_ = true;
 
     std::vector<Eigen::Vector3d> raw_waypoints;
-    raw_waypoints.reserve(msg->poses.size());
+    raw_waypoints.reserve(path.poses.size());
 
-    for (const auto& pose_stamped : msg->poses)
+    for (const auto& pose_stamped : path.poses)
     {
       geometry_msgs::msg::PoseStamped transformed_pose;
       geometry_msgs::msg::PoseStamped input_pose = pose_stamped;
       if (input_pose.header.frame_id.empty())
-        input_pose.header.frame_id = msg->header.frame_id;
+        input_pose.header.frame_id = path.header.frame_id;
       if (!transformPoseToGoalFrame(input_pose, transformed_pose))
-        return;
+        return false;
 
       Eigen::Vector3d wp;
       wp(0) = transformed_pose.pose.position.x;
@@ -763,7 +768,7 @@ namespace scan_planner
     if (!prepareReferenceWaypoints(raw_waypoints, waypoints))
     {
       have_target_ = false;
-      return;
+      return false;
     }
 
     std::vector<Eigen::Vector3d> tracker_points;
@@ -786,7 +791,7 @@ namespace scan_planner
           node_->get_logger(),
           "Unable to initialize reference progress tracker: %s",
           error.what());
-      return;
+      return false;
     }
 
     bool success = planGlobalTrajByWaypoints(waypoints);
@@ -795,6 +800,7 @@ namespace scan_planner
     {
       reference_path_active_ = true;
       planner_manager_->global_data_.last_progress_time_ = 0.0;
+      last_reference_route_outcome_ = RouteOutcome::NONE;
       /*** FSM ***/
       if (exec_state_ == WAIT_TARGET)
       {
@@ -816,6 +822,85 @@ namespace scan_planner
       reference_path_tracker_.clear();
       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory from reference path");
     }
+    return success;
+  }
+
+  bool SCANReplanFSM::isReferencePathMode() const
+  {
+    return navi_mode_ == NAVI_MODE::REFERENCE_PATH;
+  }
+
+  bool SCANReplanFSM::hasValidOdom() const
+  {
+    if (!have_odom_)
+      return false;
+    return (node_->now() - last_odom_receive_time_).seconds() <= odom_timeout_;
+  }
+
+  void SCANReplanFSM::setFollowRouteSpeedScale(double scale)
+  {
+    follow_route_speed_scale_ = scale;
+  }
+
+  void SCANReplanFSM::cancelFollowRoute()
+  {
+    if (navi_mode_ != NAVI_MODE::REFERENCE_PATH || !reference_path_active_)
+      return;
+    follow_route_cancel_pending_ = true;
+  }
+
+  void SCANReplanFSM::resetFollowRouteCancel()
+  {
+    follow_route_cancel_pending_ = false;
+  }
+
+  geometry_msgs::msg::PoseStamped SCANReplanFSM::currentOdomPose() const
+  {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.stamp = node_->now();
+    pose.header.frame_id =
+        expected_odom_frame_.empty() ? "world" : expected_odom_frame_;
+    pose.pose.position.x = static_cast<double>(odom_pos_(0));
+    pose.pose.position.y = static_cast<double>(odom_pos_(1));
+    pose.pose.position.z = static_cast<double>(odom_pos_(2));
+    pose.pose.orientation.w = odom_orient_.w();
+    pose.pose.orientation.x = odom_orient_.x();
+    pose.pose.orientation.y = odom_orient_.y();
+    pose.pose.orientation.z = odom_orient_.z();
+    return pose;
+  }
+
+  SCANReplanFSM::FollowRouteView SCANReplanFSM::followRouteView() const
+  {
+    FollowRouteView view;
+    view.have_odom = have_odom_;
+    view.route_active = reference_path_active_;
+    view.in_emergency_stop = exec_state_ == EMERGENCY_STOP;
+    view.exec_state = static_cast<int>(exec_state_);
+    view.planar_speed = odom_vel_.head<2>().norm();
+    view.route_outcome = last_reference_route_outcome_;
+
+    // Mirrors the motion_allowed definition in publishPlannerHeartbeat():
+    // the robot is moving only when the FSM allows motion AND the local
+    // trajectory identity is valid.
+    const LocalTrajData &info = planner_manager_->local_data_;
+    const bool state_allows_motion =
+        exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ;
+    const bool trajectory_valid =
+        info.traj_id_ > 0 && std::isfinite(info.duration_) &&
+        info.duration_ > 1.0e-6 &&
+        std::isfinite(info.progress_time_) && info.progress_time_ >= 0.0 &&
+        std::isfinite(info.progress_arc_length_) &&
+        info.progress_arc_length_ >= 0.0 &&
+        local_progress_traj_id_ == info.traj_id_;
+    view.motion_active = state_allows_motion && trajectory_valid;
+
+    const double total_length = reference_path_tracker_.totalLength();
+    view.progress_ratio =
+        (reference_path_active_ && total_length > 1.0e-9)
+            ? reference_path_tracker_.progress() / total_length
+            : 0.0;
+    return view;
   }
 
   void SCANReplanFSM::odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
@@ -1198,8 +1283,12 @@ namespace scan_planner
       have_target_ = false;
       have_new_target_ = false;
       active_waypoints_.clear();
+      if (reference_path_active_ &&
+          last_reference_route_outcome_ == RouteOutcome::NONE)
+        last_reference_route_outcome_ = RouteOutcome::LOCALIZATION_LOST;
       reference_path_active_ = false;
       reference_path_tracker_.clear();
+      follow_route_cancel_pending_ = false;
       preset_started_ = false;
       exec_state_ = FSM_EXEC_STATE::INIT;
       return;
@@ -1293,6 +1382,27 @@ namespace scan_planner
 
     case EXEC_TRAJ:
     {
+      if (follow_route_cancel_pending_)
+      {
+        // FollowRoute cancel: controlled stop through the normal pipeline.
+        // Point the planner at the current position so the next trajectory
+        // is a short deceleration-to-hold. This is NOT an emergency stop:
+        // no emergency trajectory is published, and the mission manager
+        // finalizes the goal with REASON_USER_CANCELED once the robot has
+        // stopped (or after a timeout).
+        follow_route_cancel_pending_ = false;
+        end_pt_ = odom_pos_;
+        end_vel_.setZero();
+        reference_path_active_ = false;
+        reference_path_tracker_.clear();
+        have_target_ = true;
+        have_new_target_ = true;
+        trigger_ = true;
+        planner_manager_->global_data_.last_progress_time_ = 0.0;
+        changeFSMExecState(REPLAN_TRAJ, "CANCEL");
+        return;
+      }
+
       /* determine if need to replan */
       LocalTrajData *info = &planner_manager_->local_data_;
       if (local_progress_traj_id_ != info->traj_id_)
@@ -1332,6 +1442,7 @@ namespace scan_planner
             reference_path_active_ = false;
             reference_path_tracker_.clear();
             have_target_ = false;
+            last_reference_route_outcome_ = RouteOutcome::SUCCEEDED;
             changeFSMExecState(WAIT_TARGET, "REFERENCE_DONE");
           }
           else
@@ -1428,6 +1539,9 @@ namespace scan_planner
       replan_fail_count_ = 0;
       need_hover_stop_ = true;
       flag_escape_emergency_ = true;
+      if (reference_path_active_ &&
+          last_reference_route_outcome_ == RouteOutcome::NONE)
+        last_reference_route_outcome_ = RouteOutcome::ABORTED;
       changeFSMExecState(EMERGENCY_STOP, "finishProcess");
     }
   }
@@ -2067,12 +2181,22 @@ namespace scan_planner
     if (navi_mode_ == NAVI_MODE::REFERENCE_PATH &&
         reference_path_active_)
     {
+      // The FollowRoute speed scale slows the route target velocity and
+      // shrinks the braking corridor accordingly. Non-route branches below
+      // keep the full max_vel envelope.
+      const double route_max_vel =
+          std::max(
+              0.01,
+              planner_manager_->pp_.max_vel_ * follow_route_speed_scale_);
+      const double route_stopping_distance =
+          route_max_vel * route_max_vel /
+          (2.0 * planner_manager_->pp_.max_acc_);
       const double target_remaining =
           std::max(
               0.0,
               reference_path_tracker_.totalLength() -
                   reference_local_target_arc_length_);
-      if (target_remaining < stopping_distance)
+      if (target_remaining < route_stopping_distance)
       {
         local_target_vel_.setZero();
       }
@@ -2081,7 +2205,7 @@ namespace scan_planner
         local_target_vel_ =
             reference_path_tracker_.tangentAt(
                 reference_local_target_arc_length_) *
-            planner_manager_->pp_.max_vel_;
+            route_max_vel;
       }
     }
     else if ((end_pt_ - local_target_pt_).norm() < stopping_distance)
