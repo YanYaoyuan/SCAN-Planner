@@ -38,6 +38,16 @@ namespace scan_planner
   class SCANReplanFSM
   {
 
+  public:
+    /** @brief Terminal outcome of the last accepted reference route. */
+    enum class RouteOutcome
+    {
+      NONE = 0,
+      SUCCEEDED = 1,
+      ABORTED = 2,
+      LOCALIZATION_LOST = 3,
+    };
+
   private:
     /* ---------- flag ---------- */
     enum FSM_EXEC_STATE
@@ -249,15 +259,6 @@ namespace scan_planner
 
     /** @brief Loads parameters and creates ROS/planning modules. @param node Owning ROS node. */
     void init(rclcpp::Node *node);
-
-    /** @brief Terminal outcome of the last accepted reference route. */
-    enum class RouteOutcome
-    {
-      NONE = 0,
-      SUCCEEDED = 1,
-      ABORTED = 2,
-      LOCALIZATION_LOST = 3,
-    };
 
     /** @brief Immutable FSM snapshot consumed by the FollowRoute action
      *  server. */

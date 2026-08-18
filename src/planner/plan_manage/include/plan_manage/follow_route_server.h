@@ -45,7 +45,7 @@ namespace scan_planner
       bool active = false;
       bool cancel_requested = false;
       bool result_sent = false;
-      GoalHandle::SharedPtr goal_handle;
+      std::shared_ptr<GoalHandle> goal_handle;
       std::string mission_id;
       std::string route_id;
       double last_progress = 0.0;
@@ -53,11 +53,13 @@ namespace scan_planner
       double emergency_stop_start_sec = -1.0;
     };
 
-    rclcpp_action::GoalResponse handleGoal(const GoalHandle::SharedPtr &goal_handle);
-    void handleAccepted(const GoalHandle::SharedPtr &goal_handle);
-    rclcpp_action::CancelResponse handleCancel(const GoalHandle::SharedPtr &goal_handle);
+    rclcpp_action::GoalResponse handleGoal(
+        const rclcpp_action::GoalUUID &,
+        const std::shared_ptr<const FollowRoute::Goal> &goal);
+    void handleAccepted(const std::shared_ptr<GoalHandle> &goal_handle);
+    rclcpp_action::CancelResponse handleCancel(const std::shared_ptr<GoalHandle> &goal_handle);
     void monitorCallback();
-    void finish(const GoalHandle::SharedPtr &goal_handle, bool success,
+    void finish(const std::shared_ptr<GoalHandle> &goal_handle, bool success,
                 std::uint32_t reason_code, const std::string &reason_text,
                 double final_progress);
 
