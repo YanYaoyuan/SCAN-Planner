@@ -30,13 +30,15 @@ FollowRouteServer::FollowRouteServer(
   fsm_(fsm),
   stuck_timeout_sec_(kDefaultStuckTimeoutSec)
 {
+  // create_server(node, name, goal_callback, cancel_callback,
+  // accepted_callback) — note the order: cancel before accepted.
   server_ = rclcpp_action::create_server<FollowRoute>(
       node_, "/omni/navigation/follow_route",
       std::bind(
           &FollowRouteServer::handleGoal, this, std::placeholders::_1,
           std::placeholders::_2),
-      std::bind(&FollowRouteServer::handleAccepted, this, std::placeholders::_1),
-      std::bind(&FollowRouteServer::handleCancel, this, std::placeholders::_1));
+      std::bind(&FollowRouteServer::handleCancel, this, std::placeholders::_1),
+      std::bind(&FollowRouteServer::handleAccepted, this, std::placeholders::_1));
 
   stuck_timeout_sec_ = node_->declare_parameter(
       "fsm.follow_route_stuck_timeout_sec", kDefaultStuckTimeoutSec);
