@@ -6,7 +6,8 @@ scan_planner_node:
     # FSM / local replanning
     # =========================
     # 1: 接收 /move_base_simple/goal 单目标; 2: 使用 fsm.waypoints;
-    # 3: 接收 /initial_path。真机调试一般先用 1。
+    # 3: 接收 /initial_path 或 FollowRoute action goal（同一模式 3 路线管线）。
+    # 真机调试一般先用 1。
     fsm.navi_mode: 1
 
     # 距离当前局部轨迹起点超过该阈值后触发重规划，单位 m。
@@ -120,6 +121,10 @@ scan_planner_node:
     # 接近最终点，并且参考折线剩余弧长足够小。
     fsm.reference_finish_distance: 0.30
     fsm.reference_finish_remaining_length: 0.30
+
+    # FollowRoute action：任务持续处于 EMERGENCY_STOP 且无法退出超过该时长
+    # （秒）时，goal 以 REASON_ABORTED 结束。默认 60s。
+    fsm.follow_route_stuck_timeout_sec: 60.0
 
     # =========================
     # Local occupancy map

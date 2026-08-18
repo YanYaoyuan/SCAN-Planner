@@ -14,9 +14,11 @@
   <depend>eigen</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>omni_robot_interfaces</depend>
   <depend>path_searching</depend>
   <depend>plan_env</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>rclpy</depend>
   <depend>scan_planner_msgs</depend>
   <depend>sensor_msgs</depend>

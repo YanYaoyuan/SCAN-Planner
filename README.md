@@ -226,6 +226,26 @@ ros2 launch scan_planner run.launch.py \
 
 waypoint 坐标是 `odom` 坐标系下的绝对坐标。
 
+### FollowRoute action（`navi_mode=3`）
+
+`navi_mode=3` 时，规划器额外提供 action server `/omni/navigation/follow_route`
+（`omni_robot_interfaces/action/FollowRoute`），与 `/initial_path` 话题走同一条
+模式 3 参考路线管线：
+
+- 同一时刻只接受一个 goal；并发 goal 直接拒绝。`mission_id` 是规划器本 epoch
+  的去重键：已终结的 `mission_id` 再次下发会被拒绝（幂等重放）。
+- 取消是受控停止（走正常轨迹管线减速到停），**不是**急停；goal 以
+  `success=false`、`reason_code=REASON_USER_CANCELED(1)` 终结。
+- 正常跑完整条路线：`success=true`、`reason_code=REASON_OK(0)`；
+  定位丢失 `REASON_LOCALIZATION_LOST(5)`；重规划失败超限急停
+  `REASON_ABORTED(2)`；路线无法接受 `REASON_GOAL_REJECTED(3)`。
+- `speed_scale` 目标速度缩放：`0` 表示规划器默认，其余取值 `0.05..1.0`。
+- 新增参数 `fsm.follow_route_stuck_timeout_sec`（默认 60s）：任务持续卡在
+  EMERGENCY_STOP 超过该时长时以 `REASON_ABORTED` 终结 goal。
+
+依赖说明：`scan_planner` 现在依赖 `omni_robot_interfaces`（接口契约仓库，
+CI 会将其 clone 进 colcon workspace；`rosdep` 步骤已跳过该 key）。
+
 ## Gazebo Fortress / Go2 仿真
 
 Go2 四足机器人物理模型基于 Gazebo Fortress、`ros_gz_sim` 和 `gz_ros2_control` 构建，对外提供 12 关节的 `joint_trajectory_controller`、`/joint_states` 话题、IMU 数据、四个足端接触力话题以及 `/clock` 时钟话题：
