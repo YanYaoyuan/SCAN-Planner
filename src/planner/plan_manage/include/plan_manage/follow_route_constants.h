@@ -13,12 +13,11 @@ namespace scan_planner
 namespace follow_route
 {
 
-// Values mirror omni_robot_interfaces/action/FollowRoute.action. The Humble
-// rosidl generator binds .action section constants to the ADJACENT generated
-// type (feedback-section constants on Result, result-section constants on
-// Feedback), so consumers mirror the constants locally instead of relying on
-// the shifted generated names. The canonical values are pinned against the
-// IDL source by the omni_robot_interfaces CI
+// Values mirror omni_robot_interfaces/action/FollowRoute.action. The
+// generated types expose the same constants (STATE_* on Feedback,
+// REASON_* on Result); mirroring them locally keeps this package from
+// depending on interface-header details. The canonical values are pinned
+// against the IDL source by the omni_robot_interfaces CI
 // (ci/check_contract_constants.py).
 
 // FollowRoute feedback state (feedback section).

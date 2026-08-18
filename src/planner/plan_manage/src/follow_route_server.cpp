@@ -30,11 +30,15 @@ FollowRouteServer::FollowRouteServer(
   fsm_(fsm),
   stuck_timeout_sec_(kDefaultStuckTimeoutSec)
 {
+  // create_server(node, name, goal_callback, cancel_callback,
+  // accepted_callback) — note the order: cancel before accepted.
   server_ = rclcpp_action::create_server<FollowRoute>(
       node_, "/omni/navigation/follow_route",
-      std::bind(&FollowRouteServer::handleGoal, this, std::placeholders::_1),
-      std::bind(&FollowRouteServer::handleAccepted, this, std::placeholders::_1),
-      std::bind(&FollowRouteServer::handleCancel, this, std::placeholders::_1));
+      std::bind(
+          &FollowRouteServer::handleGoal, this, std::placeholders::_1,
+          std::placeholders::_2),
+      std::bind(&FollowRouteServer::handleCancel, this, std::placeholders::_1),
+      std::bind(&FollowRouteServer::handleAccepted, this, std::placeholders::_1));
 
   stuck_timeout_sec_ = node_->declare_parameter(
       "fsm.follow_route_stuck_timeout_sec", kDefaultStuckTimeoutSec);
@@ -49,18 +53,17 @@ FollowRouteServer::FollowRouteServer(
 }
 
 rclcpp_action::GoalResponse FollowRouteServer::handleGoal(
-    const GoalHandle::SharedPtr &goal_handle)
+    const rclcpp_action::GoalUUID &,
+    const std::shared_ptr<const FollowRoute::Goal> &goal)
 {
-  const FollowRoute::Goal &goal = *goal_handle->get_goal();
-
   // One route at a time; concurrent goals are rejected.
   if (mission_.active)
     return rclcpp_action::GoalResponse::REJECT;
-  if (goal.mission_id.empty())
+  if (goal->mission_id.empty())
     return rclcpp_action::GoalResponse::REJECT;
   // Per-planner-epoch idempotency: a mission that already reached a terminal
   // result is rejected as a replay.
-  if (finished_mission_ids_.count(goal.mission_id) > 0)
+  if (finished_mission_ids_.count(goal->mission_id) > 0)
     return rclcpp_action::GoalResponse::REJECT;
   // The node must run in reference route mode to follow a route.
   if (!fsm_->isReferencePathMode())
@@ -68,10 +71,10 @@ rclcpp_action::GoalResponse FollowRouteServer::handleGoal(
   // A usable localization is required before the route can start.
   if (!fsm_->hasValidOdom())
     return rclcpp_action::GoalResponse::REJECT;
-  if (goal.path.poses.size() < 2)
+  if (goal->path.poses.size() < 2)
     return rclcpp_action::GoalResponse::REJECT;
 
-  const double speed_scale = static_cast<double>(goal.speed_scale);
+  const double speed_scale = static_cast<double>(goal->speed_scale);
   if (speed_scale != 0.0 &&
       (!std::isfinite(speed_scale) ||
        speed_scale < follow_route::SPEED_SCALE_MIN ||
@@ -81,7 +84,8 @@ rclcpp_action::GoalResponse FollowRouteServer::handleGoal(
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 
-void FollowRouteServer::handleAccepted(const GoalHandle::SharedPtr &goal_handle)
+void FollowRouteServer::handleAccepted(
+    const std::shared_ptr<GoalHandle> &goal_handle)
 {
   const FollowRoute::Goal &goal = *goal_handle->get_goal();
 
@@ -131,7 +135,7 @@ void FollowRouteServer::handleAccepted(const GoalHandle::SharedPtr &goal_handle)
 }
 
 rclcpp_action::CancelResponse FollowRouteServer::handleCancel(
-    const GoalHandle::SharedPtr &goal_handle)
+    const std::shared_ptr<GoalHandle> &goal_handle)
 {
   if (mission_.active && mission_.goal_handle == goal_handle &&
       !mission_.result_sent)
@@ -150,32 +154,30 @@ void FollowRouteServer::monitorCallback()
   if (!mission_.active || mission_.result_sent)
     return;
 
-  const GoalHandle::SharedPtr goal_handle = mission_.goal_handle;
+  const std::shared_ptr<GoalHandle> goal_handle = mission_.goal_handle;
   if (!goal_handle)
     return;
 
   const SCANReplanFSM::FollowRouteView view = fsm_->followRouteView();
 
   // --- periodic feedback ---
-  FollowRoute::Feedback feedback;
-  feedback.mission_id = mission_.mission_id;
-  feedback.state = view.motion_active ? follow_route::STATE_EXECUTING
-                                      : follow_route::STATE_PLANNING;
+  auto feedback = std::make_shared<FollowRoute::Feedback>();
+  feedback->mission_id = mission_.mission_id;
+  feedback->state = view.motion_active ? follow_route::STATE_EXECUTING
+                                       : follow_route::STATE_PLANNING;
   const double progress =
-      view.route_active
-          ? std::clamp(view.progress_ratio, 0.0, 1.0)
-          : 0.0;
+      view.route_active ? std::clamp(view.progress_ratio, 0.0, 1.0) : 0.0;
   mission_.last_progress = std::max(mission_.last_progress, progress);
-  feedback.progress = static_cast<float>(mission_.last_progress);
-  feedback.current_pose = fsm_->currentOdomPose();
+  feedback->progress = static_cast<float>(mission_.last_progress);
+  feedback->current_pose = fsm_->currentOdomPose();
   if (mission_.cancel_requested)
-    feedback.status_text = "canceled; controlled stop in progress";
+    feedback->status_text = "canceled; controlled stop in progress";
   else if (view.in_emergency_stop)
-    feedback.status_text = "emergency stop; holding and recovering";
+    feedback->status_text = "emergency stop; holding and recovering";
   else if (view.route_active)
-    feedback.status_text = "following route";
+    feedback->status_text = "following route";
   else
-    feedback.status_text = "planning";
+    feedback->status_text = "planning";
   goal_handle->publish_feedback(feedback);
 
   // --- terminal detection ---
@@ -250,7 +252,7 @@ void FollowRouteServer::monitorCallback()
 }
 
 void FollowRouteServer::finish(
-    const GoalHandle::SharedPtr &goal_handle, bool success,
+    const std::shared_ptr<GoalHandle> &goal_handle, bool success,
     std::uint32_t reason_code, const std::string &reason_text,
     double final_progress)
 {
@@ -268,11 +270,11 @@ void FollowRouteServer::finish(
 
   fsm_->resetFollowRouteCancel();
 
-  FollowRoute::Result result;
-  result.success = success;
-  result.reason_code = reason_code;
-  result.reason_text = reason_text;
-  result.final_progress =
+  auto result_msg = std::make_shared<FollowRoute::Result>();
+  result_msg->success = success;
+  result_msg->reason_code = reason_code;
+  result_msg->reason_text = reason_text;
+  result_msg->final_progress =
       static_cast<float>(std::clamp(final_progress, 0.0, 1.0));
 
   RCLCPP_INFO(
@@ -280,14 +282,14 @@ void FollowRouteServer::finish(
       "FollowRoute mission '%s' finished: success=%d reason=%u (%s) "
       "progress=%.3f",
       mission_.mission_id.c_str(), success ? 1 : 0, reason_code,
-      reason_text.c_str(), result.final_progress);
+      reason_text.c_str(), result_msg->final_progress);
 
   if (success)
-    goal_handle->succeeded(result);
+    goal_handle->succeed(result_msg);
   else if (reason_code == follow_route::REASON_USER_CANCELED)
-    goal_handle->canceled(result);
+    goal_handle->canceled(result_msg);
   else
-    goal_handle->aborted(result);
+    goal_handle->abort(result_msg);
 }
 
 }  // namespace scan_planner
