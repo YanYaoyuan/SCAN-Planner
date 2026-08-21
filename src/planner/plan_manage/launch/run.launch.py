@@ -50,26 +50,12 @@ def _setup(context):
     zsibot_udp_client_config_file = LaunchConfiguration(
         "zsibot_udp_client_config_file"
     ).perform(context)
-    use_lidar_to_body_odom = _as_bool(
-        LaunchConfiguration("use_lidar_to_body_odom").perform(context)
+    body_frame_id = LaunchConfiguration("body_frame_id").perform(context)
+    sensor_frame_id = LaunchConfiguration("sensor_frame_id").perform(context)
+    require_tf_ready = _as_bool(
+        LaunchConfiguration("require_tf_ready").perform(context)
     )
-    lidar_odom_topic = LaunchConfiguration("lidar_odom_topic").perform(context)
-    body_odom_topic = LaunchConfiguration("body_odom_topic").perform(context)
-    body_odom_frame_id = LaunchConfiguration("body_odom_frame_id").perform(context)
-    body_odom_sensor_frame_id = LaunchConfiguration("body_odom_sensor_frame_id").perform(context)
-    body_odom_world_frame_id = LaunchConfiguration("body_odom_world_frame_id").perform(context)
-    body_odom_publish_tf = _as_bool(LaunchConfiguration("body_odom_publish_tf").perform(context))
-    body_odom_transform_twist = _as_bool(
-        LaunchConfiguration("body_odom_transform_twist").perform(context)
-    )
-    body_to_sensor = {
-        "body_to_sensor.x": float(LaunchConfiguration("body_to_sensor_x").perform(context)),
-        "body_to_sensor.y": float(LaunchConfiguration("body_to_sensor_y").perform(context)),
-        "body_to_sensor.z": float(LaunchConfiguration("body_to_sensor_z").perform(context)),
-        "body_to_sensor.roll": float(LaunchConfiguration("body_to_sensor_roll").perform(context)),
-        "body_to_sensor.pitch": float(LaunchConfiguration("body_to_sensor_pitch").perform(context)),
-        "body_to_sensor.yaw": float(LaunchConfiguration("body_to_sensor_yaw").perform(context)),
-    }
+    tf_ready_topic = LaunchConfiguration("tf_ready_topic").perform(context)
     goal_frame_id = LaunchConfiguration("goal_frame_id").perform(context)
     goal_transform_timeout = float(LaunchConfiguration("goal_transform_timeout").perform(context))
     use_global_path_publisher = _as_bool(
@@ -108,15 +94,13 @@ def _setup(context):
         grid_frame_id = LaunchConfiguration("real_grid_frame_id").perform(context)
         cloud_is_world = _as_bool(LaunchConfiguration("real_cloud_is_world").perform(context))
         need_extrinsic = _as_bool(LaunchConfiguration("real_need_extrinsic").perform(context))
-        grid_sensor_frame_id = body_odom_sensor_frame_id
+        grid_sensor_frame_id = sensor_frame_id
         intrinsics = {
             "grid_map.cx": 317.19183349609375,
             "grid_map.cy": 256.4806823730469,
             "grid_map.fx": 609.5884399414062,
             "grid_map.fy": 609.22021484375,
         }
-        if use_lidar_to_body_odom:
-            body_pose = body_odom_topic
     else:
         body_pose = "/quad_0/body_pose"
         sensor_pose = "/quad_0/camera_pose" if sensor_type == "depth" else "/quad_0/lidar_pose"
@@ -180,6 +164,7 @@ def _setup(context):
         **intrinsics,
         "fsm.navi_mode": navi_mode,
         "fsm.expected_odom_frame": grid_frame_id,
+        "fsm.require_tf_ready": require_tf_ready,
         "grid_map.frame_id": grid_frame_id,
         "grid_map.sensor_type": sensor_type,
         "grid_map.sensor_frame_id": grid_sensor_frame_id,
@@ -245,13 +230,13 @@ def _setup(context):
             Node(
                 package="scan_planner",
                 executable="global_path_publisher",
-                name="global_path_publisher",
+                name="omni_global_path_publisher",
                 output="screen",
                 parameters=[
                     common,
                     {
                         "frame_id": grid_frame_id,
-                        "body_frame_id": body_odom_frame_id,
+                        "body_frame_id": body_frame_id,
                         "path_spacing": global_path_spacing,
                         "goal_transform_timeout": goal_transform_timeout,
                     },
@@ -265,41 +250,17 @@ def _setup(context):
         )
         initial_path = global_path_topic
 
-    if is_real and use_lidar_to_body_odom:
-        actions.append(
-            Node(
-                package="scan_planner",
-                executable="lidar_to_body_odom",
-                name="lidar_to_body_odom",
-                output="screen",
-                parameters=[
-                    common,
-                    body_to_sensor,
-                    {
-                        "body_frame_id": body_odom_frame_id,
-                        "sensor_frame_id": body_odom_sensor_frame_id,
-                        "world_frame_id": body_odom_world_frame_id,
-                        "publish_tf": body_odom_publish_tf,
-                        "transform_twist": body_odom_transform_twist,
-                    },
-                ],
-                remappings=[
-                    ("sensor_odom", lidar_odom_topic),
-                    ("body_odom", body_odom_topic),
-                ],
-            )
-        )
-
     actions.append(
         Node(
             package="scan_planner",
             executable="scan_planner_node",
-            name="scan_planner_node",
+            name="omni_scan_planner",
             output="screen",
             parameters=[planner_yaml] + ([keypoints_file] if keypoints_file else []) + [planner_overrides],
             remappings=[
                 ("body_pose", body_pose),
                 ("sensor_pose", sensor_pose),
+                ("tf_ready", tf_ready_topic),
                 ("cloud", cloud),
                 ("depth", depth),
                 ("move_base_simple/goal", goal),
@@ -313,7 +274,7 @@ def _setup(context):
             Node(
                 package="robot_state_publisher",
                 executable="robot_state_publisher",
-                name="go2_robot_state_publisher",
+                name="omni_robot_state_publisher",
                 output="screen",
                 parameters=[
                     common,
@@ -332,7 +293,7 @@ def _setup(context):
             Node(
                 package="scan_planner",
                 executable="open_loop_controller",
-                name="open_loop_controller",
+                name="omni_open_loop_controller",
                 output="screen",
                 parameters=[controllers_yaml, common],
                 remappings=[
@@ -346,7 +307,7 @@ def _setup(context):
             Node(
                 package="scan_planner",
                 executable="closed_loop_controller",
-                name="closed_loop_controller",
+                name="omni_closed_loop_controller",
                 output="screen",
                 parameters=[controllers_yaml, closed_loop_overrides],
                 remappings=[
@@ -365,7 +326,7 @@ def _setup(context):
                 Node(
                     package="zsibot_cmd_bridge",
                     executable="zsibot_cmd_bridge",
-                    name="zsibot_cmd_bridge",
+                    name="omni_zsibot_cmd_bridge",
                     output="screen",
                     parameters=[
                         zsibot_config_file,
@@ -385,7 +346,7 @@ def _setup(context):
                 Node(
                     package="zsibot_cmd_bridge",
                     executable="zsibot_cmd_udp_client",
-                    name="zsibot_cmd_udp_client",
+                    name="omni_zsibot_cmd_udp_client",
                     output="screen",
                     parameters=[
                         zsibot_udp_client_config_file,
@@ -400,7 +361,7 @@ def _setup(context):
                 Node(
                     package="scan_planner",
                     executable="go2_kinematic_sim",
-                    name="go2_kinematic_sim",
+                    name="omni_go2_kinematic_sim",
                     output="screen",
                     parameters=[
                         controllers_yaml,
@@ -425,7 +386,7 @@ def _setup(context):
                 Node(
                     package="scan_planner",
                     executable="go2_gait_publisher",
-                    name="go2_gait_publisher",
+                    name="omni_go2_gait_publisher",
                     output="screen",
                     parameters=[controllers_yaml, common],
                     remappings=[("body_pose", body_pose)],
@@ -515,28 +476,26 @@ def generate_launch_description():
             DeclareLaunchArgument("use_zsibot_udp_client", default_value="false"),
             DeclareLaunchArgument("zsibot_config_file", default_value=""),
             DeclareLaunchArgument("zsibot_udp_client_config_file", default_value=""),
-            DeclareLaunchArgument("real_body_pose_topic", default_value="/state_estimation_global"),
-            DeclareLaunchArgument("real_sensor_pose_topic", default_value="/state_estimation_global"),
+            DeclareLaunchArgument(
+                "real_body_pose_topic",
+                default_value="/omni/tf_manager/body_odom_global",
+            ),
+            DeclareLaunchArgument(
+                "real_sensor_pose_topic",
+                default_value="/omni/tf_manager/body_odom_global",
+            ),
             DeclareLaunchArgument("real_cloud_topic", default_value="/cloud_registered_global"),
             DeclareLaunchArgument("real_depth_topic", default_value="/camera/aligned_depth_to_color/image_raw"),
             DeclareLaunchArgument("real_cmd_vel_topic", default_value="/scan_planner/cmd_vel"),
-            DeclareLaunchArgument("real_grid_frame_id", default_value="lio_map"),
+            DeclareLaunchArgument("real_grid_frame_id", default_value="omni_map"),
             DeclareLaunchArgument("real_cloud_is_world", default_value="true"),
             DeclareLaunchArgument("real_need_extrinsic", default_value="false"),
-            DeclareLaunchArgument("use_lidar_to_body_odom", default_value="false"),
-            DeclareLaunchArgument("lidar_odom_topic", default_value="/state_estimation_global"),
-            DeclareLaunchArgument("body_odom_topic", default_value="/body_state_estimation_global"),
-            DeclareLaunchArgument("body_odom_frame_id", default_value="scan_base_link"),
-            DeclareLaunchArgument("body_odom_sensor_frame_id", default_value="livox_frame"),
-            DeclareLaunchArgument("body_odom_world_frame_id", default_value="lio_map"),
-            DeclareLaunchArgument("body_odom_publish_tf", default_value="false"),
-            DeclareLaunchArgument("body_odom_transform_twist", default_value="true"),
-            DeclareLaunchArgument("body_to_sensor_x", default_value="0.0"),
-            DeclareLaunchArgument("body_to_sensor_y", default_value="0.0"),
-            DeclareLaunchArgument("body_to_sensor_z", default_value="0.0"),
-            DeclareLaunchArgument("body_to_sensor_roll", default_value="0.0"),
-            DeclareLaunchArgument("body_to_sensor_pitch", default_value="0.0"),
-            DeclareLaunchArgument("body_to_sensor_yaw", default_value="0.0"),
+            DeclareLaunchArgument("body_frame_id", default_value="omni_base_link"),
+            DeclareLaunchArgument("sensor_frame_id", default_value="omni_lidar_link"),
+            DeclareLaunchArgument("require_tf_ready", default_value="false"),
+            DeclareLaunchArgument(
+                "tf_ready_topic", default_value="/omni/tf_manager/ready"
+            ),
             DeclareLaunchArgument("goal_frame_id", default_value=""),
             DeclareLaunchArgument("goal_transform_timeout", default_value="0.2"),
             DeclareLaunchArgument("goal_topic", default_value="/move_base_simple/goal"),

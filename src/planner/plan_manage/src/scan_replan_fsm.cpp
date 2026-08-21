@@ -232,6 +232,8 @@ namespace scan_planner
     self_inflation_frame_id_ = load_parameter<std::string>(node_, "grid_map.frame_id", "world");
     expected_odom_frame_ =
         load_parameter<std::string>(node_, "fsm.expected_odom_frame", self_inflation_frame_id_);
+    require_tf_ready_ = load_parameter<bool>(node_, "fsm.require_tf_ready", false);
+    tf_ready_ = !require_tf_ready_;
     goal_frame_id_ = load_parameter<std::string>(node_, "fsm.goal_frame_id", self_inflation_frame_id_);
     goal_transform_timeout_ = load_parameter<double>(node_, "fsm.goal_transform_timeout", 0.2);
     if (goal_frame_id_.empty())
@@ -262,6 +264,9 @@ namespace scan_planner
     odom_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
         "body_pose", rclcpp::SensorDataQoS(),
         std::bind(&SCANReplanFSM::odometryCallback, this, std::placeholders::_1));
+    tf_ready_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+        "tf_ready", rclcpp::QoS(1).reliable().transient_local(),
+        std::bind(&SCANReplanFSM::tfReadyCallback, this, std::placeholders::_1));
     go2_execution_frozen_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
         "planning/go2_execution_frozen", 10,
         std::bind(&SCANReplanFSM::go2ExecutionFrozenCallback, this, std::placeholders::_1));
@@ -907,6 +912,13 @@ namespace scan_planner
   {
     if (!msg)
       return;
+    if (require_tf_ready_ && !tf_ready_)
+    {
+      RCLCPP_WARN_THROTTLE(
+          node_->get_logger(), *node_->get_clock(), 2000,
+          "Ignoring body_pose until omni_tf_manager reports ready");
+      return;
+    }
     const auto &position = msg->pose.pose.position;
     const auto &orientation = msg->pose.pose.orientation;
     const auto &linear = msg->twist.twist.linear;
@@ -987,6 +999,37 @@ namespace scan_planner
       preset_started_ = true;
       planGlobalTrajbyGivenWps();
     }
+  }
+
+  void SCANReplanFSM::tfReadyCallback(const std_msgs::msg::Bool::ConstSharedPtr &msg)
+  {
+    if (!require_tf_ready_ || !msg)
+      return;
+    if (msg->data)
+    {
+      if (!tf_ready_)
+        RCLCPP_INFO(node_->get_logger(), "omni_tf_manager is ready; waiting for fresh body_pose");
+      tf_ready_ = true;
+      return;
+    }
+    if (tf_ready_ || have_odom_)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "omni_tf_manager lost readiness; clearing trajectory and localization state");
+      publishTrajectoryClear("omni_tf_manager not ready");
+    }
+    tf_ready_ = false;
+    have_odom_ = false;
+    trigger_ = false;
+    have_target_ = false;
+    have_new_target_ = false;
+    active_waypoints_.clear();
+    reference_path_active_ = false;
+    reference_path_tracker_.clear();
+    follow_route_cancel_pending_ = false;
+    preset_started_ = false;
+    exec_state_ = FSM_EXEC_STATE::INIT;
   }
 
   void SCANReplanFSM::go2ExecutionFrozenCallback(const std_msgs::msg::Bool::ConstSharedPtr &msg)
@@ -1265,6 +1308,9 @@ namespace scan_planner
   void SCANReplanFSM::execFSMCallback()
   {
     updateLocalTrajTimeFreeze();
+
+    if (require_tf_ready_ && !tf_ready_)
+      return;
 
     if (have_odom_ &&
         (node_->now() - last_odom_receive_time_).seconds() > odom_timeout_)

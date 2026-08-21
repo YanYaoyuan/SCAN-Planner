@@ -18,7 +18,7 @@ class Go2GaitPublisher : public rclcpp::Node
 {
 public:
   /** @brief Loads gait parameters and creates publishers/subscribers. */
-  Go2GaitPublisher() : Node("go2_gait_publisher")
+  Go2GaitPublisher() : Node("omni_go2_gait_publisher")
   {
     const double rate = declare_parameter<double>("rate", 60.0);
     gait_frequency_ = declare_parameter<double>("gait_frequency", 2.2);

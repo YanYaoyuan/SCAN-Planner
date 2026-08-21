@@ -1,4 +1,4 @@
-closed_loop_controller:
+omni_closed_loop_controller:
   ros__parameters:
     use_sim_time: false
 
@@ -153,10 +153,10 @@ closed_loop_controller:
     local_progress_movement_deadband: 0.01
     local_progress_initial_credit: 0.15
 
-    # 真机由 launch 覆盖成 lio_map；留空时跟随收到的轨迹/里程计 frame。
+    # 真机由 launch 覆盖成 omni_map；留空时跟随收到的轨迹/里程计 frame。
     expected_frame_id: ""
 
-open_loop_controller:
+omni_open_loop_controller:
   ros__parameters:
     use_sim_time: false
 
@@ -180,7 +180,7 @@ open_loop_controller:
     init_yaw: 0.0
 
 # not use
-go2_kinematic_sim:
+omni_go2_kinematic_sim:
   ros__parameters:
     use_sim_time: false
 
@@ -206,7 +206,7 @@ go2_kinematic_sim:
     frame_id: world
     child_frame_id: base
 # not use
-go2_gait_publisher:
+omni_go2_gait_publisher:
   ros__parameters:
     use_sim_time: false
 

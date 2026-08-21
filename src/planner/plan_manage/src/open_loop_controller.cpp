@@ -25,7 +25,7 @@ class OpenLoopController : public rclcpp::Node
 {
 public:
   /** @brief Loads output frames and creates ROS interfaces. */
-  OpenLoopController() : Node("open_loop_controller")
+  OpenLoopController() : Node("omni_open_loop_controller")
   {
     frame_id_ = declare_parameter<std::string>("frame_id", "world");
     child_frame_id_ = declare_parameter<std::string>("child_frame_id", "quadruped");

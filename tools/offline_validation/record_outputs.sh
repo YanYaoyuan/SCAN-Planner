@@ -12,14 +12,14 @@ Environment overrides:
   OUTPUT_BAG    default: /tmp/scanplanner_offline_outputs_YYYYmmdd_HHMMSS
   ROS_DOMAIN_ID default: 73
   CLOUD_TOPIC   default: /cloud_registered_global
-  BODY_ODOM_TOPIC default: /body_state_estimation_global
+  BODY_ODOM_TOPIC default: /omni/tf_manager/body_odom_global
 EOF
   exit 0
 fi
 source "${SCRIPT_DIR}/common.sh"
 
 OUTPUT_BAG="${OUTPUT_BAG:-/tmp/scanplanner_offline_outputs_$(date +%Y%m%d_%H%M%S)}"
-BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation_global}"
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/omni/tf_manager/body_odom_global}"
 CMD_VEL_TOPIC="${CMD_VEL_TOPIC:-/scan_planner/cmd_vel}"
 CLOUD_TOPIC="${CLOUD_TOPIC:-/cloud_registered_global}"
 

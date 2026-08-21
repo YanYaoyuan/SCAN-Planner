@@ -30,11 +30,11 @@ class GlobalPathPublisher : public rclcpp::Node
 {
 public:
   /** @brief Loads path parameters and creates ROS interfaces. */
-  GlobalPathPublisher() : Node("global_path_publisher")
+  GlobalPathPublisher() : Node("omni_global_path_publisher")
   {
-    frame_id_ = declare_parameter<std::string>("frame_id", "lio_map");
+    frame_id_ = declare_parameter<std::string>("frame_id", "omni_map");
     body_frame_id_ =
-        declare_parameter<std::string>("body_frame_id", "scan_base_link");
+        declare_parameter<std::string>("body_frame_id", "omni_base_link");
     path_spacing_ = declare_parameter<double>("path_spacing", 0.25);
     goal_transform_timeout_ =
         declare_parameter<double>("goal_transform_timeout", 0.2);

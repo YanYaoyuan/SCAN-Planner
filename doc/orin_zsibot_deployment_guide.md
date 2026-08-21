@@ -6,6 +6,14 @@
 > `ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1` 或 launch 参数
 > `enable_deprecated_zsibot_transport:=true`，且两套 bridge 严禁同时运行。
 
+> **TF 接口更新（2026-08）：** 当前生产链由 `omni_tf_manager` 独占全部
+> 静态/动态 TF。Planner 只消费
+> `/omni/tf_manager/body_odom_global`、`/cloud_registered_global` 和
+> `/omni/tf_manager/ready`，坐标为 `omni_map`、`omni_base_link`、
+> `omni_lidar_link`。本文后部出现的 `lidar_to_body_odom`、
+> `body_to_sensor_*`、`lio_map`、`livox_frame` 命令均是历史记录，不得用于
+> 当前真机。可执行命令以 `tools/orin_runtime/run_real_planner*.sh` 为准。
+
 本文档面向当前双板机器狗。产品角色固定如下：
 
 - Orin NX：运行 SCAN-Planner、LIO/感知和统一 `rosdeck_robot_bridge` Gateway；
@@ -19,8 +27,9 @@
 ## 1. 总体链路
 
 ```text
-LIO / Sensor Driver
-  -> odom / sensor_pose / cloud / depth
+Sensor Driver -> omni_tf_manager -> canonical sensor topics / TF
+omni_slam -> /omni/tf_manager/body_odom_global + /cloud_registered_global
+omni_tf_manager -> /omni/tf_manager/ready
 
 SCAN-Planner on Orin NX
   -> /scan_planner/cmd_vel
@@ -413,7 +422,7 @@ q                  保存并退出
 保存后的 `keypoints.yaml` 类似：
 
 ```yaml
-scan_planner_node:
+omni_scan_planner:
   ros__parameters:
     fsm.waypoints: [0.5, 0, 0.3, 1.0, 0, 0.3]
 ```
@@ -738,19 +747,20 @@ standUp state confirmed: ctrlmode=1; move commands enabled
 
 ### 10.5 Planner 一直 no odom
 
-说明 `scan_planner_node` 没收到 `body_pose`。启用 `use_lidar_to_body_odom:=true` 时，先检查 `/body_state_estimation`。
-
-检查：
+说明 `omni_scan_planner` 没收到 manager 输出或 TF authority 尚未 ready。检查：
 
 ```bash
-ros2 topic echo /your/robot/odom --once
-ros2 topic info /your/robot/odom
+ros2 topic echo /omni/tf_manager/ready --qos-durability transient_local --once
+ros2 topic echo /omni/tf_manager/body_odom_global --once
+ros2 run tf2_ros tf2_echo omni_map omni_base_link
 ```
 
 确认启动参数：
 
 ```bash
-real_body_pose_topic:=/your/robot/odom
+require_tf_ready:=true
+real_body_pose_topic:=/omni/tf_manager/body_odom_global
+real_grid_frame_id:=omni_map
 ```
 
 消息类型必须是 `nav_msgs/Odometry`。如果新狗只有 PoseStamped，需要写转换节点转成 Odometry。
@@ -879,19 +889,21 @@ file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_udp_client
 # 重要：当前真机坐标链路
 
 本指南后文保留了早期 `lio_odom` 调试流程，便于回放旧 bag；它不再代表当前真机
-默认配置。当前真机运行统一使用 `lio_map`：
+默认配置。当前真机运行统一使用 Omni contract：
 
 ```text
-/state_estimation_global
-/body_state_estimation_global
+/omni/tf_manager/ready
+/omni/tf_manager/body_odom_global
 /cloud_registered_global
 /planning/global_path
 /planning/bspline
 /planning/local_path
+omni_map -> omni_base_link -> omni_imu_link -> omni_lidar_link
 ```
 
 请优先阅读
 [`SCAN_Planner_修改清单.md`](./SCAN_Planner_修改清单.md)，并直接使用
 `tools/orin_runtime/run_real_planner.sh` 或
 `tools/orin_runtime/run_real_planner_udp.sh`。不要把后文旧命令中的
-`lio_odom`、`/state_estimation`、`/cloud_registered` 原样用于当前真机自动导航。
+`lio_odom`、`lio_map`、`/state_estimation*`、`/body_state_estimation*` 原样用于
+当前真机自动导航。

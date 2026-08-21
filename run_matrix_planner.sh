@@ -4,27 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATRIX_ROOT="${MATRIX_ROOT:-/data/robot/sim/matrix}"
 CMD_VEL_TOPIC="${CMD_VEL_TOPIC:-/scan_planner/cmd_vel}"
-LIDAR_ODOM_TOPIC="${LIDAR_ODOM_TOPIC:-/state_estimation_global}"
-SENSOR_ODOM_TOPIC="${SENSOR_ODOM_TOPIC:-/state_estimation_global}"
-BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/body_state_estimation_global}"
+BODY_ODOM_TOPIC="${BODY_ODOM_TOPIC:-/omni/tf_manager/body_odom_global}"
+TF_READY_TOPIC="${TF_READY_TOPIC:-/omni/tf_manager/ready}"
 CLOUD_TOPIC="${CLOUD_TOPIC:-/cloud_registered_global}"
-GRID_FRAME_ID="${GRID_FRAME_ID:-lio_map}"
-BODY_FRAME_ID="${BODY_FRAME_ID:-scan_base_link}"
-SENSOR_FRAME_ID="${SENSOR_FRAME_ID:-livox_frame}"
+GRID_FRAME_ID="${GRID_FRAME_ID:-omni_map}"
+BODY_FRAME_ID="${BODY_FRAME_ID:-omni_base_link}"
+SENSOR_FRAME_ID="${SENSOR_FRAME_ID:-omni_lidar_link}"
 GOAL_TOPIC="${GOAL_TOPIC:-/move_base_simple/goal}"
 NAVI_MODE="${NAVI_MODE:-3}"
 CONTROL_MODE="${CONTROL_MODE:-none}"
 START_ZENOH="${START_ZENOH:-1}"
 RVIZ="${RVIZ:-0}"
-
-# MATRiX config/config.json currently mounts the simulated Mid360 near this
-# pose. Keep it aligned with omni_slam's FAST-LIO extrinsics.
-BODY_TO_SENSOR_X="${BODY_TO_SENSOR_X:-0.13011}"
-BODY_TO_SENSOR_Y="${BODY_TO_SENSOR_Y:--0.02329}"
-BODY_TO_SENSOR_Z="${BODY_TO_SENSOR_Z:-0.17598}"
-BODY_TO_SENSOR_ROLL="${BODY_TO_SENSOR_ROLL:-0.0}"
-BODY_TO_SENSOR_PITCH="${BODY_TO_SENSOR_PITCH:-0.0}"
-BODY_TO_SENSOR_YAW="${BODY_TO_SENSOR_YAW:-0.0}"
 
 CONTROLLER_DRIVE_MODE="${CONTROLLER_DRIVE_MODE:-pure_pursuit}"
 CONTROLLER_TRACKING_MODE="${CONTROLLER_TRACKING_MODE:-path_follow}"
@@ -50,7 +40,7 @@ Options:
   --navi-mode MODE        1 for direct goal, 2 for waypoints, 3 for generated global path. Default: ${NAVI_MODE}
   --goal-topic TOPIC      Goal topic. Default: ${GOAL_TOPIC}
   --cloud-topic TOPIC     World cloud topic from SLAM. Default: ${CLOUD_TOPIC}
-  --odom-topic TOPIC      SLAM odom topic. Default: ${LIDAR_ODOM_TOPIC}
+  --odom-topic TOPIC      Manager body odom topic. Default: ${BODY_ODOM_TOPIC}
   --cmd-topic TOPIC       Planner cmd_vel topic. Default: ${CMD_VEL_TOPIC}
   --bridge-config PATH    Use an explicit zsibot_cmd_bridge YAML.
   --rviz                  Also start SCAN-Planner RViz.
@@ -90,8 +80,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --odom-topic)
-      LIDAR_ODOM_TOPIC="${2:?missing odom topic}"
-      SENSOR_ODOM_TOPIC="$LIDAR_ODOM_TOPIC"
+      BODY_ODOM_TOPIC="${2:?missing odom topic}"
       shift 2
       ;;
     --cmd-topic)
@@ -184,6 +173,21 @@ wait_for_message() {
   done
 }
 
+wait_for_ready() {
+  local timeout_seconds="${1:-45}"
+  local start
+  start=$(date +%s)
+  while ! timeout 3 ros2 topic echo "$TF_READY_TOPIC" std_msgs/msg/Bool \
+      --qos-durability transient_local --once 2>/dev/null | grep -Fq "data: true"; do
+    if (( $(date +%s) - start >= timeout_seconds )); then
+      echo "[ERROR] timed out waiting for $TF_READY_TOPIC=data:true" >&2
+      echo "        Check omni_tf_manager diagnostics and SLAM localization state." >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 read_yaml_value() {
   local key="$1"
   local file="$2"
@@ -240,10 +244,13 @@ fi
 
 echo "[INFO] ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
 echo "[INFO] RMW_IMPLEMENTATION=$RMW_IMPLEMENTATION"
-echo "[INFO] waiting for SLAM odom: $LIDAR_ODOM_TOPIC"
-wait_for_topic "$LIDAR_ODOM_TOPIC" 45
-echo "[INFO] waiting for first SLAM odom sample: $LIDAR_ODOM_TOPIC"
-wait_for_message "$LIDAR_ODOM_TOPIC" 45
+echo "[INFO] waiting for TF authority: $TF_READY_TOPIC"
+wait_for_topic "$TF_READY_TOPIC" 45
+wait_for_ready 45
+echo "[INFO] waiting for manager body odom: $BODY_ODOM_TOPIC"
+wait_for_topic "$BODY_ODOM_TOPIC" 45
+echo "[INFO] waiting for first manager body odom sample: $BODY_ODOM_TOPIC"
+wait_for_message "$BODY_ODOM_TOPIC" 45
 echo "[INFO] waiting for SLAM cloud: $CLOUD_TOPIC"
 wait_for_topic "$CLOUD_TOPIC" 45
 echo "[INFO] waiting for first SLAM cloud sample: $CLOUD_TOPIC"
@@ -259,9 +266,11 @@ fi
 
 USE_BRIDGE="false"
 ENABLE_DEPRECATED_ZSIBOT_TRANSPORT="false"
+ZSIBOT_LAUNCH_ARGS=()
 if [[ "$CONTROL_MODE" == "bridge" ]]; then
   USE_BRIDGE="true"
   ENABLE_DEPRECATED_ZSIBOT_TRANSPORT="true"
+  ZSIBOT_LAUNCH_ARGS+=("zsibot_config_file:=$BRIDGE_CONFIG_FILE")
 fi
 
 USE_GLOBAL_PATH_PUBLISHER="false"
@@ -276,8 +285,8 @@ fi
 
 exec ros2 launch scan_planner run.launch.py \
   is_real_world:=true \
-  navi_mode:=3 \
-  use_global_path_publisher:=true \
+  navi_mode:="$NAVI_MODE" \
+  use_global_path_publisher:="$USE_GLOBAL_PATH_PUBLISHER" \
   sensor_type:=lidar \
   controller_mode:=closed_loop \
   controller_tracking_mode:="$CONTROLLER_TRACKING_MODE" \
@@ -292,28 +301,17 @@ exec ros2 launch scan_planner run.launch.py \
   publish_robot_description:=false \
   enable_deprecated_zsibot_transport:="$ENABLE_DEPRECATED_ZSIBOT_TRANSPORT" \
   use_zsibot_bridge:="$USE_BRIDGE" \
-  zsibot_config_file:="$BRIDGE_CONFIG_FILE" \
-  use_lidar_to_body_odom:=true \
-  lidar_odom_topic:="$LIDAR_ODOM_TOPIC" \
-  body_odom_topic:="$BODY_ODOM_TOPIC" \
-  body_odom_frame_id:="$BODY_FRAME_ID" \
-  body_odom_sensor_frame_id:="$SENSOR_FRAME_ID" \
-  body_odom_world_frame_id:="$GRID_FRAME_ID" \
-  body_odom_publish_tf:=false \
-  body_odom_transform_twist:=true \
-  body_to_sensor_x:="$BODY_TO_SENSOR_X" \
-  body_to_sensor_y:="$BODY_TO_SENSOR_Y" \
-  body_to_sensor_z:="$BODY_TO_SENSOR_Z" \
-  body_to_sensor_roll:="$BODY_TO_SENSOR_ROLL" \
-  body_to_sensor_pitch:="$BODY_TO_SENSOR_PITCH" \
-  body_to_sensor_yaw:="$BODY_TO_SENSOR_YAW" \
+  body_frame_id:="$BODY_FRAME_ID" \
+  sensor_frame_id:="$SENSOR_FRAME_ID" \
+  require_tf_ready:=true \
+  tf_ready_topic:="$TF_READY_TOPIC" \
   real_cmd_vel_topic:="$CMD_VEL_TOPIC" \
   real_body_pose_topic:="$BODY_ODOM_TOPIC" \
-  real_sensor_pose_topic:="$SENSOR_ODOM_TOPIC" \
   real_cloud_topic:="$CLOUD_TOPIC" \
   real_grid_frame_id:="$GRID_FRAME_ID" \
   real_cloud_is_world:=true \
   real_need_extrinsic:=false \
   goal_frame_id:="$GRID_FRAME_ID" \
   goal_topic:="$GOAL_TOPIC" \
+  "${ZSIBOT_LAUNCH_ARGS[@]}" \
   "${EXTRA_ARGS[@]}"

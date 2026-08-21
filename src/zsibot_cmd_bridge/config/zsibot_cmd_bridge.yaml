@@ -1,7 +1,7 @@
 # DEPRECATED / OPT-IN ONLY.
 # The product-level unified robot bridge must be the sole owner of the vendor SDK.
 # This file is retained only for temporary migration and isolated bench tests.
-zsibot_cmd_bridge:
+omni_zsibot_cmd_bridge:
   ros__parameters:
     # The launch opt-in overrides this to true. Direct ros2 run stays disabled.
     enable_deprecated_transport: false

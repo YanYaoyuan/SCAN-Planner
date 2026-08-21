@@ -81,7 +81,7 @@ The Orin-side UDP client config is `config/zsibot_cmd_udp_client.yaml`.
 The direct bridge config is `config/zsibot_cmd_bridge.yaml`:
 
 ```yaml
-zsibot_cmd_bridge:
+omni_zsibot_cmd_bridge:
   ros__parameters:
     local_ip: "192.168.234.234"
     dog_ip: "192.168.234.1"

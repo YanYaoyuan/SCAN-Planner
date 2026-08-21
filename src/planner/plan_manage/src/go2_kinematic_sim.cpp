@@ -22,7 +22,7 @@ class Go2KinematicSim : public rclcpp::Node
 {
 public:
   /** @brief Loads simulator parameters and creates ROS interfaces. */
-  Go2KinematicSim() : Node("go2_kinematic_sim")
+  Go2KinematicSim() : Node("omni_go2_kinematic_sim")
   {
     x_ = declare_parameter<double>("init_x", 0.0);
     y_ = declare_parameter<double>("init_y", 0.0);

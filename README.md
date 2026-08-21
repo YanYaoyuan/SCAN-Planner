@@ -198,7 +198,7 @@ file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_udp_client
 ROS 2 参数名称使用点号分隔，例如 `grid_map.resolution`。预设路径点是由 xyz 三元组组成的浮点数组：
 
 ```yaml
-scan_planner_node:
+omni_scan_planner:
   ros__parameters:
     fsm.navi_mode: 2
     fsm.waypoints: [0.0, 0.0, 0.3, 5.0, 1.0, 0.3]
