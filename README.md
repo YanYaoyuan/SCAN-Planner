@@ -5,6 +5,7 @@
   <a href="https://www.bilibili.com/video/BV15a7P6UEXb/"><img alt="视频" src="https://img.shields.io/badge/视频-Bilibili-FB7299?logo=bilibili&logoColor=white"/></a>
   <a href="https://wuyi2121.github.io/SCAN-Planner/"><img alt="项目主页" src="https://img.shields.io/badge/项目主页-Website-4A90E2?logo=googlechrome&logoColor=white"/></a>
   <a href="https://github.com/YanYaoyuan/SCAN-Planner/actions/workflows/ros2-humble-ci.yml"><img alt="ROS 2 Humble CI" src="https://github.com/YanYaoyuan/SCAN-Planner/actions/workflows/ros2-humble-ci.yml/badge.svg?branch=ros2-community"/></a>
+  <a href="https://github.com/YanYaoyuan/SCAN-Planner/actions/workflows/build-s100.yml"><img alt="RDK S100 core build" src="https://github.com/YanYaoyuan/SCAN-Planner/actions/workflows/build-s100.yml/badge.svg?branch=ros2-community"/></a>
 </div>
 
 <p align="center">
@@ -187,6 +188,48 @@ file install-orin-sysroot/lib/zsibot_cmd_bridge/zsibot_cmd_udp_client
 - 脚本会修补 sysroot 中 ROS 2 CMake export 里的裸 `libpython3.10.so` 绝对路径，并保留 `.orin-cross-bak` 备份。
 - 如果最终链接阶段报 `libblas.so.3`、`liblapack.so.3` 找不到，确认 sysroot 中存在 `/usr/lib/aarch64-linux-gnu/libblas.so.3` 和 `/usr/lib/aarch64-linux-gnu/liblapack.so.3`。
 - qemu wrapper 编译速度比普通交叉编译慢，完整构建约数分钟到十几分钟。
+
+### RDK S100 核心算法交叉编译
+
+S100 使用与 `omni_slam` 相同的 D-Robotics 官方 TROS 工具链、固定版本
+sysroot 和本地 rootless Docker 入口。构建采用显式包白名单，只包含：
+
+```text
+omni_robot_interfaces scan_planner_msgs plan_env path_searching
+bspline_opt traj_utils scan_planner
+```
+
+S100 产品产物不会构建或打包 Go2 仿真节点、地图生成/本地感知仿真包、
+`zsibot_cmd_bridge`，也不会包含兼容用的 open-loop controller。核心 x86 CI
+采用相同的节点裁剪；普通开发构建的 CMake 默认值仍保留这些组件，便于显式
+运行仿真。`go2_description` 是可选的可视化资源，不再作为规划器硬依赖；使用
+前需单独构建该包，并显式传入 `publish_robot_description:=true`。
+
+开发机本地执行完整 S100 交叉编译：
+
+```bash
+cd /home/user/robot/omni_code/omni_navi/SCAN-Planner
+./scripts/test_s100_local.sh --check-only
+./scripts/test_s100_local.sh
+```
+
+默认要求同级目录存在 `omni_robot_interfaces`。如果源码位于其他位置：
+
+```bash
+OMNI_ROBOT_INTERFACES_SOURCE=/absolute/path/to/omni_robot_interfaces \
+  ./scripts/test_s100_local.sh
+```
+
+构建缓存和输出位于 `/data/scan-planner-s100-local`，Docker 数据复用
+`/data/docker-s100`，不会操作系统 Docker daemon。最终 ROS 2 merged-install
+overlay 位于：
+
+```text
+/data/scan-planner-s100-local/workspace/cc_ws/tros_ws/install
+```
+
+GitHub Actions 中的 `build-s100.yml` 使用同一份 `build_s100_cross.sh`，并验证
+核心可执行文件为 ARM64，同时对所有被排除组件做负向产物检查。
 
 ## 配置与接口
 

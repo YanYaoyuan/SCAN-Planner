@@ -26,7 +26,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <tf2/utils.hpp>
+#include <tf2/utils.h>
 
 #include "bspline_opt/uniform_bspline.h"
 #include "plan_manage/bspline_message_validator.h"

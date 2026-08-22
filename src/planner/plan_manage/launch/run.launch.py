@@ -468,7 +468,7 @@ def generate_launch_description():
             DeclareLaunchArgument("use_gpu", default_value="false"),
             DeclareLaunchArgument("use_pcd_map", default_value="false"),
             DeclareLaunchArgument("pcd_map_file", default_value=""),
-            DeclareLaunchArgument("publish_robot_description", default_value="true"),
+            DeclareLaunchArgument("publish_robot_description", default_value="false"),
             DeclareLaunchArgument(
                 "enable_deprecated_zsibot_transport", default_value="false"
             ),

@@ -133,7 +133,10 @@ jobs:
           colcon build \
             --packages-up-to scan_planner \
             --event-handlers console_direct+ \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release
+            --cmake-args \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER=OFF \
+              -DSCAN_PLANNER_BUILD_SIMULATION_NODES=OFF
 
       - name: Run planner tests
         run: |

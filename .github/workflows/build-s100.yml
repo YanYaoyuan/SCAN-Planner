@@ -1,0 +1,188 @@
+name: Build RDK S100 core (cross compile)
+
+on:
+  push:
+    branches: [main, ros2-community]
+  pull_request:
+    branches: [main, ros2-community]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Artifact version (optional)"
+        required: false
+        type: string
+      interfaces_ref:
+        description: omni_robot_interfaces tag, branch, or commit
+        required: false
+        default: main
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+      interfaces_ref:
+        description: omni_robot_interfaces tag, branch, or commit
+        required: false
+        default: main
+        type: string
+
+concurrency:
+  group: s100-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-core:
+    if: vars.OMNI_ENABLE_S100_BUILD == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    env:
+      VERSION_INPUT: ${{ inputs.version }}
+      S100_IMAGE: pc_tros_ubuntu22.04:v1.0.0
+      S100_IMAGE_URL: http://archive.d-robotics.cc/TogetheROS/cross_compile_docker/pc_tros_ubuntu22.04_v1.0.0.tar.gz
+      S100_IMAGE_SHA256: ec065c268782373311421f0bb7f2212bfec6584a7070a9737468055a6bce2c88
+      ROBOT_DEV_CONFIG_REF: f44b1ad2575b34c189fd470de1db9c5ad48b6886
+      S100_SYSROOT_REF: de9fa286f71a72d24c349477cd59f41cc2cc3d8f
+      INTERFACES_REF: ${{ inputs.interfaces_ref || vars.OMNI_ROBOT_INTERFACES_REF || 'main' }}
+
+    steps:
+      - name: Checkout SCAN-Planner
+        uses: actions/checkout@v7.0.1
+
+      - name: Checkout omni_robot_interfaces
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: YanYaoyuan/omni_robot_interfaces
+          ref: ${{ env.INTERFACES_REF }}
+          path: omni_robot_interfaces_source
+          ssh-key: ${{ secrets.OMNI_ROBOT_INTERFACES_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Record interface revision
+        shell: bash
+        run: echo "OMNI_ROBOT_INTERFACES_SHA=$(git -C omni_robot_interfaces_source rev-parse HEAD)" >> "${GITHUB_ENV}"
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            || true
+          docker system prune --all --force || true
+          df -h
+
+      - name: Load official TROS cross-compilation image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_archive="${RUNNER_TEMP}/pc_tros_ubuntu22.04_v1.0.0.tar.gz"
+          curl --fail --location \
+            --retry 5 --retry-all-errors --continue-at - \
+            --output "${image_archive}" \
+            "${S100_IMAGE_URL}"
+          echo "${S100_IMAGE_SHA256}  ${image_archive}" | sha256sum --check
+          docker load --input "${image_archive}"
+          docker image inspect "${S100_IMAGE}" \
+            --format='ID={{.Id}} ARCH={{.Architecture}} OS={{.Os}}'
+
+      - name: Cross compile production core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export S100_SOURCE_ROOT="${GITHUB_WORKSPACE}"
+          export OMNI_ROBOT_INTERFACES_SOURCE="${GITHUB_WORKSPACE}/omni_robot_interfaces_source"
+          export S100_WORK_ROOT="${RUNNER_TEMP}/s100-cross"
+          export S100_CLEAN=1
+
+          ./scripts/build_s100_cross.sh
+
+          cross_root="${S100_WORK_ROOT}/cc_ws/tros_ws"
+          echo "S100_CROSS_ROOT=${cross_root}" >> "${GITHUB_ENV}"
+
+      - name: Package core overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          overlay="${S100_CROSS_ROOT}/install"
+          test -x "${overlay}/lib/scan_planner/scan_planner_node"
+          test -x "${overlay}/lib/scan_planner/closed_loop_controller"
+          test -x "${overlay}/lib/scan_planner/global_path_publisher"
+
+          for excluded_path in \
+            "${overlay}/lib/scan_planner/open_loop_controller" \
+            "${overlay}/lib/scan_planner/go2_kinematic_sim" \
+            "${overlay}/lib/scan_planner/go2_gait_publisher" \
+            "${overlay}/share/go2_description" \
+            "${overlay}/share/local_sensing_node" \
+            "${overlay}/share/map_generator" \
+            "${overlay}/share/mockamap" \
+            "${overlay}/share/zsibot_cmd_bridge"; do
+            test ! -e "${excluded_path}"
+          done
+
+          version="${VERSION_INPUT:-}"
+          if [[ -z "${version}" ]]; then
+            if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+              version="${GITHUB_REF_NAME}"
+            else
+              version="${GITHUB_SHA::12}"
+            fi
+          fi
+
+          version="${version//\//-}"
+          name="scan-planner-rdk-s100-aarch64-${version}-${GITHUB_SHA::12}"
+          mkdir -p "dist/${name}"
+          cp -a "${overlay}/." "dist/${name}/"
+
+          {
+            echo "project=SCAN-Planner"
+            echo "platform=rdk-s100-rdkos-4"
+            echo "architecture=aarch64"
+            echo "version=${version}"
+            echo "scan_planner_sha=${GITHUB_SHA}"
+            echo "omni_robot_interfaces_sha=${OMNI_ROBOT_INTERFACES_SHA}"
+            echo "robot_dev_config_sha=${ROBOT_DEV_CONFIG_REF}"
+            echo "sysroot_sha=${S100_SYSROOT_REF}"
+            echo "packages=omni_robot_interfaces scan_planner_msgs plan_env path_searching bspline_opt traj_utils scan_planner"
+          } > "dist/${name}/MANIFEST.txt"
+
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          sha256sum "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
+          ls -lh "dist/${name}.tar.gz" "dist/${name}.tar.gz.sha256"
+
+      - name: Upload S100 artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: scan-planner-rdk-s100-aarch64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GITHUB_WORKSPACE}"
+          test -n "${RUNNER_TEMP}"
+
+          sudo rm -rf \
+            "${GITHUB_WORKSPACE}/dist" \
+            "${RUNNER_TEMP}/s100-cross"
+
+          docker system prune --all --force || true
+          df -h
