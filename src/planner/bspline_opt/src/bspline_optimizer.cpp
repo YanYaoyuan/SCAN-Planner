@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <optional>
 // using namespace std;
 
 namespace scan_planner
@@ -257,7 +258,8 @@ namespace scan_planner
       int got_intersection_id = -1;
       for (int j = segment_ids[i].first + 1; j < segment_ids[i].second; ++j)
       {
-        Eigen::Vector3d ctrl_pts_law(cps_.points.col(j + 1) - cps_.points.col(j - 1)), intersection_point;
+        Eigen::Vector3d ctrl_pts_law(cps_.points.col(j + 1) - cps_.points.col(j - 1));
+        std::optional<Eigen::Vector3d> intersection_point;
         int Astar_id = a_star_paths[i].size() / 2, last_Astar_id; // Let "Astar_id = id_of_the_most_far_away_Astar_point" will be better, but it needs more computation
         double val = (a_star_paths[i][Astar_id] - cps_.points.col(j)).dot(ctrl_pts_law), last_val = val;
         while (Astar_id >= 0 && Astar_id < (int)a_star_paths[i].size())
@@ -288,20 +290,19 @@ namespace scan_planner
 
             //cout << "i=" << i << " j=" << j << " Astar_id=" << Astar_id << " last_Astar_id=" << last_Astar_id << " intersection_point = " << intersection_point.transpose() << endl;
 
-            got_intersection_id = j;
             break;
           }
         }
 
-        if (got_intersection_id >= 0)
+        if (intersection_point.has_value())
         {
-          cps_.flag_temp[j] = true;
-          double length = (intersection_point - cps_.points.col(j)).norm();
+          const Eigen::Vector3d &current_intersection = *intersection_point;
+          double length = (current_intersection - cps_.points.col(j)).norm();
           if (length > 1e-5)
           {
             for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
             {
-              Eigen::Vector3d sample_pt = (a / length) * intersection_point + (1 - a / length) * cps_.points.col(j);
+              Eigen::Vector3d sample_pt = (a / length) * current_intersection + (1 - a / length) * cps_.points.col(j);
               double sample_yaw = estimateControlPointYaw(cps_.points, j);
               occ = grid_map_->getInflateOccupancy(sample_pt, sample_yaw);
 
@@ -309,8 +310,10 @@ namespace scan_planner
               {
                 if (occ)
                   a += grid_map_->getResolution();
-                cps_.base_point[j].push_back((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
-                cps_.direction[j].push_back((intersection_point - cps_.points.col(j)).normalized());
+                cps_.base_point[j].push_back((a / length) * current_intersection + (1 - a / length) * cps_.points.col(j));
+                cps_.direction[j].push_back((current_intersection - cps_.points.col(j)).normalized());
+                cps_.flag_temp[j] = true;
+                got_intersection_id = j;
                 break;
               }
             }
@@ -885,7 +888,8 @@ namespace scan_planner
         int got_intersection_id = -1;
         for (int j = segment_ids[i].first + 1; j < segment_ids[i].second; ++j)
         {
-          Eigen::Vector3d ctrl_pts_law(cps_.points.col(j + 1) - cps_.points.col(j - 1)), intersection_point;
+          Eigen::Vector3d ctrl_pts_law(cps_.points.col(j + 1) - cps_.points.col(j - 1));
+          std::optional<Eigen::Vector3d> intersection_point;
           int Astar_id = a_star_paths[i].size() / 2, last_Astar_id; // Let "Astar_id = id_of_the_most_far_away_Astar_point" will be better, but it needs more computation
           double val = (a_star_paths[i][Astar_id] - cps_.points.col(j)).dot(ctrl_pts_law), last_val = val;
           while (Astar_id >= 0 && Astar_id < (int)a_star_paths[i].size())
@@ -916,20 +920,19 @@ namespace scan_planner
                    (ctrl_pts_law.dot(cps_.points.col(j) - a_star_paths[i][Astar_id]) / denom) // = t
                   );
 
-              got_intersection_id = j;
               break;
             }
           }
 
-          if (got_intersection_id >= 0)
+          if (intersection_point.has_value())
           {
-            cps_.flag_temp[j] = true;
-            double length = (intersection_point - cps_.points.col(j)).norm();
+            const Eigen::Vector3d &current_intersection = *intersection_point;
+            double length = (current_intersection - cps_.points.col(j)).norm();
             if (length > 1e-5)
             {
               for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
               {
-                Eigen::Vector3d sample_pt = (a / length) * intersection_point + (1 - a / length) * cps_.points.col(j);
+                Eigen::Vector3d sample_pt = (a / length) * current_intersection + (1 - a / length) * cps_.points.col(j);
                 double sample_yaw = estimateControlPointYaw(cps_.points, j);
                 bool occ = grid_map_->getInflateOccupancy(sample_pt, sample_yaw);
 
@@ -937,15 +940,13 @@ namespace scan_planner
                 {
                   if (occ)
                     a += grid_map_->getResolution();
-                  cps_.base_point[j].push_back((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
-                  cps_.direction[j].push_back((intersection_point - cps_.points.col(j)).normalized());
+                  cps_.base_point[j].push_back((a / length) * current_intersection + (1 - a / length) * cps_.points.col(j));
+                  cps_.direction[j].push_back((current_intersection - cps_.points.col(j)).normalized());
+                  cps_.flag_temp[j] = true;
+                  got_intersection_id = j;
                   break;
                 }
               }
-            }
-            else
-            {
-              got_intersection_id = -1;
             }
           }
         }
