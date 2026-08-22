@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Reset CI workspace and local caches
         run: |
@@ -65,7 +65,7 @@ jobs:
           rosdep update --rosdistro "${ROS_DISTRO}"
 
       - name: Checkout omni_robot_interfaces
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           repository: lifliu/omni_robot_interfaces
           ref: ${{ env.OMNI_ROBOT_INTERFACES_REF }}
@@ -146,7 +146,7 @@ jobs:
 
       - name: Upload colcon logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: colcon-logs-${{ github.run_id }}
           path: /tmp/scan_planner_ws/log
