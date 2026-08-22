@@ -23,6 +23,11 @@ bool withinInclusive(double value, double lower, double upper) noexcept
   return value >= lower - kArcTolerance && value <= upper + kArcTolerance;
 }
 
+bool deadlineExpired(const ReferenceRoute::DeadlineQuery &query) noexcept
+{
+  return query && query();
+}
+
 }  // namespace
 
 const char * referenceRouteRangeStatusName(
@@ -38,6 +43,8 @@ const char * referenceRouteRangeStatusName(
       return "out_of_range";
     case ReferenceRouteRangeStatus::kResourceLimit:
       return "resource_limit";
+    case ReferenceRouteRangeStatus::kDeadlineExceeded:
+      return "deadline_exceeded";
   }
   return "unknown";
 }
@@ -214,9 +221,15 @@ Eigen::Vector3d ReferenceRoute::tangentAt(double route_s) const
 ReferenceRouteRangeResult ReferenceRoute::sampleRange(
     double start_s,
     double end_s,
-    double spacing) const
+    double spacing,
+    const DeadlineQuery &deadline_exceeded) const
 {
   ReferenceRouteRangeResult output;
+  if (deadlineExpired(deadline_exceeded))
+  {
+    output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+    return output;
+  }
   if (!std::isfinite(start_s) || !std::isfinite(end_s) ||
       !std::isfinite(spacing) || spacing <= 0.0 ||
       end_s < start_s - kArcTolerance)
@@ -255,6 +268,11 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
       static_cast<std::size_t>(regular_segment_count);
   for (std::size_t index = 1; index < regular_segments; ++index)
   {
+    if (deadlineExpired(deadline_exceeded))
+    {
+      output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+      return output;
+    }
     const double route_s =
         start_s + spacing * static_cast<double>(index);
     if (!std::isfinite(route_s) || route_s <= start_s)
@@ -277,6 +295,11 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
     std::size_t corner_count = 0;
     for (double vertex_s : cumulative_lengths_)
     {
+      if (deadlineExpired(deadline_exceeded))
+      {
+        output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+        return output;
+      }
       const double first_lap = std::ceil(
           (start_s - vertex_s - kArcTolerance) / total_length_);
       const double last_lap = std::floor(
@@ -296,6 +319,11 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
         continue;
       for (std::int64_t lap = first_lap_index; ; ++lap)
       {
+        if (deadlineExpired(deadline_exceeded))
+        {
+          output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+          return output;
+        }
         if (++corner_count > config_.max_sample_count)
         {
           output.status = ReferenceRouteRangeStatus::kResourceLimit;
@@ -318,11 +346,21 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
   {
     for (double vertex_s : cumulative_lengths_)
     {
+      if (deadlineExpired(deadline_exceeded))
+      {
+        output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+        return output;
+      }
       if (withinInclusive(vertex_s, start_s, end_s))
         coordinates.emplace_back(vertex_s, true);
     }
   }
 
+  if (deadlineExpired(deadline_exceeded))
+  {
+    output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+    return output;
+  }
   std::sort(
       coordinates.begin(),
       coordinates.end(),
@@ -332,6 +370,11 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
   unique_coordinates.reserve(coordinates.size());
   for (const auto &coordinate : coordinates)
   {
+    if (deadlineExpired(deadline_exceeded))
+    {
+      output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+      return output;
+    }
     if (!unique_coordinates.empty() &&
         std::abs(coordinate.first - unique_coordinates.back().first) <=
             kArcTolerance)
@@ -353,6 +396,12 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
   output.samples.reserve(unique_coordinates.size());
   for (const auto &[route_s, is_original_vertex] : unique_coordinates)
   {
+    if (deadlineExpired(deadline_exceeded))
+    {
+      output.samples.clear();
+      output.status = ReferenceRouteRangeStatus::kDeadlineExceeded;
+      return output;
+    }
     output.samples.push_back(
         {pointAt(route_s), tangentAt(route_s), route_s, is_original_vertex});
   }

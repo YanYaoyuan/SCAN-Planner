@@ -8,6 +8,7 @@
 #include <Eigen/Core>
 
 #include <cstddef>
+#include <functional>
 #include <vector>
 
 namespace scan_planner
@@ -28,7 +29,8 @@ enum class ReferenceRouteRangeStatus
   kSuccess,
   kInvalidInput,
   kOutOfRange,
-  kResourceLimit
+  kResourceLimit,
+  kDeadlineExceeded
 };
 
 /** @brief Result of sampling an ordered route interval. */
@@ -58,6 +60,8 @@ const char * referenceRouteRangeStatusName(
 class ReferenceRoute final
 {
 public:
+  using DeadlineQuery = std::function<bool()>;
+
   /** @brief Construction and sampling resource limits. */
   struct Config
   {
@@ -110,7 +114,8 @@ public:
   ReferenceRouteRangeResult sampleRange(
       double start_s,
       double end_s,
-      double spacing) const;
+      double spacing,
+      const DeadlineQuery &deadline_exceeded = {}) const;
 
   /** @brief Finds the first-lap segment containing a route coordinate. */
   std::size_t segmentIndex(double route_s) const;

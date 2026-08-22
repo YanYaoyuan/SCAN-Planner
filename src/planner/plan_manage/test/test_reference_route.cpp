@@ -148,6 +148,19 @@ TEST(ReferenceRoute, AcceptsRoundedIntegralSpacingAcrossClosedSeam)
   EXPECT_TRUE(containsVertexAt(range, route.totalLength()));
 }
 
+TEST(ReferenceRoute, DeadlineInterruptsInternalSamplingLoops)
+{
+  const ReferenceRoute route(
+      {{0.0, 0.0, 0.0}, {10.0, 0.0, 0.0}}, false);
+  std::size_t checks = 0;
+  const auto range = route.sampleRange(
+      0.0, 10.0, 0.001,
+      [&checks]() { return ++checks > 5; });
+
+  EXPECT_EQ(range.status, ReferenceRouteRangeStatus::kDeadlineExceeded);
+  EXPECT_TRUE(range.samples.empty());
+}
+
 TEST(ReferenceRoute, EnforcesSampleBudgetBeforeLargeAllocation)
 {
   ReferenceRoute::Config config;
