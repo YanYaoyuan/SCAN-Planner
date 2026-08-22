@@ -12,6 +12,7 @@
 #include <plan_env/grid_map.h>
 #include <plan_manage/candidate_plan.h>
 #include <plan_manage/plan_container.hpp>
+#include <plan_manage/trajectory_acceptance_validator.h>
 #include <rclcpp/rclcpp.hpp>
 #include <traj_utils/planning_visualization.h>
 
@@ -103,8 +104,10 @@ namespace scan_planner
     LocalTrajData buildLocalTrajData(
         const UniformBspline &position_traj,
         const rclcpp::Time &time_now) const;
-    /** @brief Performs final dynamic-limit validation. @param position_traj Position spline. @return True when within configured limits. */
-    bool checkDynamicFeasibility(UniformBspline position_traj);
+    /** @brief Performs final finite, resource, dynamics, and collision validation. */
+    TrajectoryAcceptanceResult validateLocalTrajectory(
+        UniformBspline position_traj,
+        const PlanDeadline &deadline) const;
 
     /** @brief Reparameterizes a B-spline after time scaling. @param[in,out] bspline Position spline. @param start_end_derivative Boundary derivatives. @param ratio Time scaling. @param[out] ctrl_pts New control points. @param[out] dt New knot interval. @param[out] time_inc Added duration. */
     void reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio, Eigen::MatrixXd &ctrl_pts, double &dt,
