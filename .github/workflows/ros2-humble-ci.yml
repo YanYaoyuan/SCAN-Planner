@@ -67,10 +67,11 @@ jobs:
       - name: Checkout omni_robot_interfaces
         uses: actions/checkout@v7.0.1
         with:
-          repository: lifliu/omni_robot_interfaces
+          repository: YanYaoyuan/omni_robot_interfaces
           ref: ${{ env.OMNI_ROBOT_INTERFACES_REF }}
           path: omni_robot_interfaces_source
-          token: ${{ secrets.OMNI_CI_REPO_TOKEN || github.token }}
+          ssh-key: ${{ secrets.OMNI_ROBOT_INTERFACES_DEPLOY_KEY }}
+          persist-credentials: false
 
       - name: Prepare colcon workspace
         run: |
