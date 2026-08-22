@@ -76,7 +76,9 @@ target_include_directories(trajectory_acceptance_validator PUBLIC
 ament_target_dependencies(trajectory_acceptance_validator bspline_opt)
 target_link_libraries(trajectory_acceptance_validator Eigen3::Eigen)
 
-add_library(reference_route STATIC src/reference_route.cpp)
+add_library(reference_route STATIC
+  src/reference_route.cpp
+  src/route_progress_tracker.cpp)
 target_include_directories(reference_route PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -146,6 +148,10 @@ if(BUILD_TESTING)
     test/test_reference_route.cpp)
   target_include_directories(test_reference_route PRIVATE include)
   target_link_libraries(test_reference_route reference_route Eigen3::Eigen)
+  ament_add_gtest(test_route_progress_tracker
+    test/test_route_progress_tracker.cpp)
+  target_include_directories(test_route_progress_tracker PRIVATE include)
+  target_link_libraries(test_route_progress_tracker reference_route Eigen3::Eigen)
   ament_add_gtest(test_yaw_command_filter
     test/test_yaw_command_filter.cpp)
   target_include_directories(test_yaw_command_filter PRIVATE include)

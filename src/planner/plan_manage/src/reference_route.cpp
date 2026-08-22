@@ -158,8 +158,6 @@ double ReferenceRoute::normalizeRouteS(double route_s) const
   double normalized = std::fmod(route_s, total_length_);
   if (normalized < 0.0)
     normalized += total_length_;
-  if (normalized >= total_length_ - kArcTolerance)
-    normalized = 0.0;
   return normalized;
 }
 

@@ -132,6 +132,8 @@ TEST(ReferenceRoute, ClosedRouteSamplesAcrossSeamWithUnwrappedArcLength)
       Eigen::Vector3d(0.0, 0.0, 0.0), 1.0e-12));
   EXPECT_NEAR(route.normalizeRouteS(4.5), 0.5, 1.0e-12);
   EXPECT_NEAR(route.normalizeRouteS(-0.5), 3.5, 1.0e-12);
+  EXPECT_GT(route.pointAt(4.0 - 1.0e-6).y(), 0.0);
+  EXPECT_LT(route.pointAt(4.0 - 1.0e-6).y(), 2.0e-6);
 }
 
 TEST(ReferenceRoute, EnforcesSampleBudgetBeforeLargeAllocation)
