@@ -21,7 +21,8 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker.hpp>
 
 #include <pcl/point_cloud.h>
@@ -94,6 +95,7 @@ struct MappingParameters {
   /* mapping sensor input */
   string sensor_type_, sensor_frame_id_;
   double lidar_sync_tolerance_;
+  double tf_lookup_timeout_;
   bool cloud_is_world_;
   bool need_extrinsic_;
   Eigen::Matrix4d lidar_extrinsic_;
@@ -221,8 +223,6 @@ public:
   void publishDepthCloud();
   /** @brief Publishes the active sliding-map bounds marker. */
   void publishSlidingMapBBox();
-  /** @brief Publishes the sliding-map frame pose. */
-  void publishSlidingMapFrame();
 
   /** @brief Reports whether depth data have been integrated. @return True after first valid depth observation. */
   bool hasDepthObservation();
@@ -254,6 +254,8 @@ private:
   void lidarCloudPoseCallback(
       const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud,
       const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
+  /** @brief Resolves the canonical sensor pose from TF and integrates a world cloud. */
+  void worldCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud);
   /** @brief Updates the sliding-map center frame. @param pose Frame odometry. */
   void slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& pose);
   /** @brief Receives a world-frame cloud without synchronized pose. @param img Point cloud message. */
@@ -321,7 +323,8 @@ private:
       SynchronizerCloudPose;
 
   rclcpp::Node* node_{nullptr};
-  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> depth_sub_;
   shared_ptr<message_filters::Subscriber<nav_msgs::msg::Odometry>> depth_pose_sub_;
   SynchronizerImagePose sync_image_pose_;
@@ -329,6 +332,7 @@ private:
   shared_ptr<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>> lidar_cloud_sub_;
   shared_ptr<message_filters::Subscriber<nav_msgs::msg::Odometry>> lidar_pose_sub_;
   SynchronizerCloudPose sync_cloud_pose_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr world_cloud_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sliding_map_frame_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_inf_pub_;

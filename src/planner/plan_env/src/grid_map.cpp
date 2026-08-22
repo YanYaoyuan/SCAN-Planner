@@ -7,7 +7,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <tf2/exceptions.h>
+#include <tf2/time.h>
 
 namespace
 {
@@ -71,18 +72,22 @@ void GridMap::initMap(rclcpp::Node *node)
   load_parameter(node_, "grid_map.show_occ_time", mp_.show_occ_time_, false);
 
   load_parameter(node_, "grid_map.frame_id", mp_.frame_id_, string("world"));
-  load_parameter(node_, "grid_map.sliding_map_frame_id", mp_.sliding_map_frame_id_, string("sliding_map"));
+  load_parameter(node_, "grid_map.sliding_map_frame_id", mp_.sliding_map_frame_id_, string(""));
   load_parameter(node_, "grid_map.ground_height", mp_.ground_height_, 0.0);
 
   load_parameter(node_, "grid_map.sensor_type", mp_.sensor_type_, string("lidar"));
-  load_parameter(node_, "grid_map.sensor_frame_id", mp_.sensor_frame_id_, string("livox_frame"));
+  load_parameter(node_, "grid_map.sensor_frame_id", mp_.sensor_frame_id_, string("omni_lidar_link"));
   load_parameter(node_, "grid_map.lidar_sync_tolerance", mp_.lidar_sync_tolerance_, 0.05);
+  load_parameter(node_, "grid_map.tf_lookup_timeout", mp_.tf_lookup_timeout_, 0.1);
   load_parameter(node_, "grid_map.cloud_is_world", mp_.cloud_is_world_, true);
   load_parameter(node_, "grid_map.need_extrinsic", mp_.need_extrinsic_, true);
   if (!std::isfinite(mp_.lidar_sync_tolerance_) ||
       mp_.lidar_sync_tolerance_ < 0.0)
     throw std::invalid_argument(
         "grid_map.lidar_sync_tolerance must be finite and non-negative");
+  if (!std::isfinite(mp_.tf_lookup_timeout_) || mp_.tf_lookup_timeout_ < 0.0)
+    throw std::invalid_argument(
+        "grid_map.tf_lookup_timeout must be finite and non-negative");
 
   mp_.lidar_extrinsic_ <<
       1.0, 0.0, 0.0, -0.01100,
@@ -151,7 +156,8 @@ void GridMap::initMap(rclcpp::Node *node)
   md_.proj_points_cnt = 0;
 
   /* init callback */
-  tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(*node_);
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   if (mp_.sensor_type_ == "depth")
   {
@@ -167,18 +173,27 @@ void GridMap::initMap(rclcpp::Node *node)
   }
   else if (mp_.sensor_type_ == "lidar")
   {
-    lidar_cloud_sub_ =
-        std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>();
-    lidar_pose_sub_ =
-        std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>();
-    lidar_cloud_sub_->subscribe(node_, "cloud", rmw_qos_profile_sensor_data);
-    lidar_pose_sub_->subscribe(node_, "sensor_pose", rmw_qos_profile_sensor_data);
-    sync_cloud_pose_.reset(new message_filters::Synchronizer<SyncPolicyCloudPose>(
-        SyncPolicyCloudPose(50), *lidar_cloud_sub_, *lidar_pose_sub_));
-    sync_cloud_pose_->registerCallback(
-        std::bind(
-            &GridMap::lidarCloudPoseCallback, this,
-            std::placeholders::_1, std::placeholders::_2));
+    if (mp_.cloud_is_world_)
+    {
+      world_cloud_sub_ = node_->create_subscription<sensor_msgs::msg::PointCloud2>(
+          "cloud", rclcpp::SensorDataQoS(),
+          std::bind(&GridMap::worldCloudCallback, this, std::placeholders::_1));
+    }
+    else
+    {
+      lidar_cloud_sub_ =
+          std::make_shared<message_filters::Subscriber<sensor_msgs::msg::PointCloud2>>();
+      lidar_pose_sub_ =
+          std::make_shared<message_filters::Subscriber<nav_msgs::msg::Odometry>>();
+      lidar_cloud_sub_->subscribe(node_, "cloud", rmw_qos_profile_sensor_data);
+      lidar_pose_sub_->subscribe(node_, "sensor_pose", rmw_qos_profile_sensor_data);
+      sync_cloud_pose_.reset(new message_filters::Synchronizer<SyncPolicyCloudPose>(
+          SyncPolicyCloudPose(50), *lidar_cloud_sub_, *lidar_pose_sub_));
+      sync_cloud_pose_->registerCallback(
+          std::bind(
+              &GridMap::lidarCloudPoseCallback, this,
+              std::placeholders::_1, std::placeholders::_2));
+    }
   }
 
   sliding_map_frame_sub_ = node_->create_subscription<nav_msgs::msg::Odometry>(
@@ -760,7 +775,6 @@ void GridMap::visCallback()
 
   publishMap();
   publishMapInflate(true);
-  publishSlidingMapFrame();
   publishSlidingMapBBox();
   publishDepthCloud();
 }
@@ -952,6 +966,52 @@ void GridMap::slidingMapFrameCallback(const nav_msgs::msg::Odometry::ConstShared
   md_.sliding_map_frame_pos_ = Eigen::Vector3d(pos.x, pos.y, pos.z);
 }
 
+void GridMap::worldCloudCallback(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr &cloud)
+{
+  if (!cloud)
+    return;
+  if (cloud->header.frame_id != mp_.frame_id_)
+  {
+    RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] reject world cloud frame '%s'; expected '%s'",
+        cloud->header.frame_id.c_str(), mp_.frame_id_.c_str());
+    return;
+  }
+  if (mp_.sensor_frame_id_.empty())
+  {
+    RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] grid_map.sensor_frame_id is required for world clouds");
+    return;
+  }
+
+  try
+  {
+    const auto transform = tf_buffer_->lookupTransform(
+        mp_.frame_id_, mp_.sensor_frame_id_, rclcpp::Time(cloud->header.stamp),
+        tf2::durationFromSec(mp_.tf_lookup_timeout_));
+    const auto &translation = transform.transform.translation;
+    const auto &rotation = transform.transform.rotation;
+    Eigen::Quaterniond ray_q(rotation.w, rotation.x, rotation.y, rotation.z);
+    if (ray_q.norm() < 1.0e-6)
+      return;
+    ray_q.normalize();
+    md_.ray_pos_ = Eigen::Vector3d(translation.x, translation.y, translation.z);
+    md_.ray_q_ = ray_q;
+    md_.has_ray_pose_ = true;
+    cloudCallback(cloud);
+  }
+  catch (const tf2::TransformException &exception)
+  {
+    RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 2000,
+        "[GridMap] cannot resolve %s -> %s at cloud stamp: %s",
+        mp_.frame_id_.c_str(), mp_.sensor_frame_id_.c_str(), exception.what());
+  }
+}
+
 void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &img)
 {
   if (mp_.sensor_type_ != "lidar")
@@ -1102,22 +1162,6 @@ void GridMap::publishMapInflate(bool all_info)
   map_inf_pub_->publish(cloud_msg);
 
   // ROS_INFO("pub map");
-}
-
-void GridMap::publishSlidingMapFrame()
-{
-  if (mp_.sliding_map_frame_id_.empty())
-    return;
-
-  geometry_msgs::msg::TransformStamped transform;
-  transform.header.stamp = node_->now();
-  transform.header.frame_id = mp_.frame_id_;
-  transform.child_frame_id = mp_.sliding_map_frame_id_;
-  transform.transform.translation.x = md_.sliding_map_frame_pos_.x();
-  transform.transform.translation.y = md_.sliding_map_frame_pos_.y();
-  transform.transform.translation.z = md_.sliding_map_frame_pos_.z();
-  transform.transform.rotation.w = 1.0;
-  tf_broadcaster_->sendTransform(transform);
 }
 
 void GridMap::publishSlidingMapBBox()

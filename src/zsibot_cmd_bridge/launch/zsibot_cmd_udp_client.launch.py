@@ -33,7 +33,7 @@ def _setup(context):
         Node(
             package="zsibot_cmd_bridge",
             executable="zsibot_cmd_udp_client",
-            name="zsibot_cmd_udp_client",
+            name="omni_zsibot_cmd_udp_client",
             output="screen",
             parameters=[config_file, {"enable_deprecated_transport": True}],
             remappings=[("cmd_vel", cmd_vel_topic)],

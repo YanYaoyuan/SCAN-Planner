@@ -40,7 +40,7 @@ def _setup(context):
             Node(
                 package="map_generator",
                 executable="map_pub",
-                name="map_pub",
+                name="omni_map_pub",
                 namespace="map_generator",
                 output="screen",
                 parameters=[
@@ -59,7 +59,7 @@ def _setup(context):
             Node(
                 package="mockamap",
                 executable="mockamap_node",
-                name="mockamap_node",
+                name="omni_mockamap",
                 output="screen",
                 parameters=[
                     simulator_yaml,
@@ -79,7 +79,7 @@ def _setup(context):
             Node(
                 package="local_sensing_node",
                 executable="opengl_render_node" if use_gpu else "pcl_render_node",
-                name="pcl_render_node",
+                name="omni_pcl_render",
                 output="screen",
                 parameters=[
                     simulator_yaml,
@@ -107,7 +107,7 @@ def _setup(context):
             Node(
                 package="odom_visualization",
                 executable="odom_visualization",
-                name="odom_visualization",
+                name="omni_odom_visualization",
                 output="screen",
                 parameters=[simulator_yaml, {"use_sim_time": use_sim_time}],
                 remappings=[

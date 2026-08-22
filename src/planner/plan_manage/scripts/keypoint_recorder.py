@@ -76,7 +76,7 @@ class KeypointRecorder(Node):
     def build_yaml(self):
         values = [format_float(value) for point in self.waypoints for value in point]
         return (
-            "scan_planner_node:\n"
+            "omni_scan_planner:\n"
             "  ros__parameters:\n"
             f"    fsm.waypoints: [{', '.join(values)}]\n"
         )

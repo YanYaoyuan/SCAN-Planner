@@ -33,7 +33,7 @@ class ZsiBotCmdBridge : public rclcpp::Node
 {
 public:
   /** @brief Loads network, safety, and command-limit parameters and initializes the SDK. */
-  ZsiBotCmdBridge() : Node("zsibot_cmd_bridge")
+  ZsiBotCmdBridge() : Node("omni_zsibot_cmd_bridge")
   {
     const bool enable_deprecated_transport =
         declare_parameter<bool>("enable_deprecated_transport", false);

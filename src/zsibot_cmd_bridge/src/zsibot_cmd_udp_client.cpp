@@ -45,7 +45,7 @@ class ZsiBotCmdUdpClient : public rclcpp::Node
 {
 public:
   /** @brief Loads UDP and safety parameters, opens the socket, and creates ROS interfaces. */
-  ZsiBotCmdUdpClient() : Node("zsibot_cmd_udp_client")
+  ZsiBotCmdUdpClient() : Node("omni_zsibot_cmd_udp_client")
   {
     const bool enable_deprecated_transport =
         declare_parameter<bool>("enable_deprecated_transport", false);

@@ -32,7 +32,11 @@ ament_target_dependencies(plan_env
   cv_bridge geometry_msgs message_filters nav_msgs pcl_conversions rclcpp
   sensor_msgs tf2 tf2_ros visualization_msgs
 )
-target_link_libraries(plan_env Eigen3::Eigen ${PCL_LIBRARIES} ${OpenCV_LIBS})
+# Use the component targets explicitly.  The aggregate PCL_LIBRARIES variable
+# can lose the component libraries after ROS dependency discovery, which is
+# especially visible when a static plan_env archive is linked on S100.
+target_link_libraries(plan_env
+  Eigen3::Eigen pcl_common pcl_io pcl_filters ${OpenCV_LIBS})
 
 install(TARGETS plan_env EXPORT export_plan_env
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
@@ -41,4 +45,4 @@ ament_export_targets(export_plan_env HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   cv_bridge Eigen3 geometry_msgs message_filters nav_msgs pcl_conversions
   rclcpp sensor_msgs tf2 tf2_ros visualization_msgs)
-ament_package()
+ament_package(CONFIG_EXTRAS cmake/plan_env_pcl_components.cmake)

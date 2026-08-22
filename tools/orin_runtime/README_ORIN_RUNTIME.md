@@ -2,10 +2,12 @@
 
 这个包是给 Orin NX 运行用的 ARM64 ROS 2 install 产物。
 
-> **当前真机请先阅读：** 早期章节中的 `/state_estimation`、
-> `/cloud_registered`、`/body_state_estimation` 和 `lio_odom` 仅用于旧 bag/
-> 旧 runtime。当前默认链路使用 `/state_estimation_global`、
-> `/cloud_registered_global`、`/body_state_estimation_global` 和 `lio_map`。
+> **当前真机请先阅读：** 早期章节中的 `/state_estimation*`、
+> `/body_state_estimation*`、`lio_map`、`livox_frame` 和
+> `lidar_to_body_odom` 仅用于旧 bag/旧 runtime。当前默认链路使用
+> `/omni/tf_manager/body_odom_global`、`/cloud_registered_global`、
+> `omni_map`、`omni_base_link`，并要求
+> `/omni/tf_manager/ready=true`。
 > 源码工作区直接运行时，请优先按
 > [`../../doc/局部路径闭环控制升级与真机测试指南.md`](../../doc/局部路径闭环控制升级与真机测试指南.md)
 > 操作。
@@ -161,13 +163,14 @@ ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_real_planner_udp.sh
 
 - `publish_robot_description:=false`
 - `real_cmd_vel_topic:=/scan_planner/cmd_vel`
-- `use_lidar_to_body_odom:=true`
-- `lidar_odom_topic:=/state_estimation`
-- `body_odom_topic:=/body_state_estimation`
-- `real_sensor_pose_topic:=/state_estimation`
-- `real_cloud_topic:=/cloud_registered`
-- `real_grid_frame_id:=lio_odom`
-- `goal_frame_id:=lio_odom`
+- `real_body_pose_topic:=/omni/tf_manager/body_odom_global`
+- `real_cloud_topic:=/cloud_registered_global`
+- `real_grid_frame_id:=omni_map`
+- `goal_frame_id:=omni_map`
+- `body_frame_id:=omni_base_link`
+- `sensor_frame_id:=omni_lidar_link`
+- `require_tf_ready:=true`
+- `tf_ready_topic:=/omni/tf_manager/ready`
 - `real_cloud_is_world:=true`
 - `real_need_extrinsic:=false`
 - `run_real_planner.sh`：默认两个旧 transport 均为 `false`
@@ -178,10 +181,9 @@ ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 ./run_real_planner_udp.sh
 
 ```bash
 ENABLE_DEPRECATED_ZSIBOT_TRANSPORT=1 \
-GRID_FRAME_ID=lio_odom \
-BODY_TO_SENSOR_X=0.12 \
-BODY_TO_SENSOR_Y=0.00 \
-BODY_TO_SENSOR_Z=0.18 \
+GRID_FRAME_ID=omni_map \
+BODY_FRAME_ID=omni_base_link \
+SENSOR_FRAME_ID=omni_lidar_link \
 ./run_real_planner_udp.sh
 ```
 
@@ -206,18 +208,32 @@ CONTROLLER_DRIVE_MODE=omni ./run_real_planner_udp.sh
 
 ### 5.1 真机 TF 必须先整理
 
-不要让 SLAM 和机器狗底盘同时发布同名 `odom` 坐标系。当前 FAST_LIO 配置文件里的关键项是：
+所有生产 TF 由 `omni_tf_manager` 唯一管理。FAST_LIO 必须关闭 TF 发布，并使用
+profile 规定的 frame；planner 不再创建激光到机身的适配 TF：
 
 ```yaml
 common:
-  odom_frame_id: "odom"
-  sensor_frame_id: "livox_frame"
-  base_frame_id: "livox_frame"
+  map_frame_id: "omni_map"
+  odom_frame_id: "omni_odom"
+  sensor_frame_id: "omni_imu_link"
+  lidar_frame_id: "omni_lidar_link"
+publish:
+  tf_en: false
 ```
 
-建议把 `/home/user/robot/omni_slam/FAST_LIO/config/omni_dog.yaml` 和
-`/home/user/robot/omni_slam/FAST_LIO/config/omni_dog_relocalization.yaml`
-里的 `common.odom_frame_id` 改成 `lio_odom`，然后 SCAN-Planner 用同一个 frame：
+启动 planner 前必须验证 Manager 已就绪：
+
+```bash
+ros2 topic echo /omni/tf_manager/ready --qos-durability transient_local --once
+ros2 run tf2_ros tf2_echo omni_map omni_base_link
+```
+
+`ready=false` 时 FSM 会清除当前轨迹并回到等待状态；不要绕过该门控发送导航目标。
+
+### 5.2 使用 Manager 输出的机身位姿
+
+机身位姿由 `omni_tf_manager` 根据审核过的 6DoF 外参生成。SCAN-Planner 只订阅
+`/omni/tf_manager/body_odom_global`，不再接受或配置 `body_to_sensor_*`：
 
 ```bash
 ros2 launch scan_planner run.launch.py \
@@ -227,53 +243,21 @@ ros2 launch scan_planner run.launch.py \
   publish_robot_description:=false \
   enable_deprecated_zsibot_transport:=true \
   use_zsibot_udp_client:=true \
-  real_cmd_vel_topic:=/scan_planner/cmd_vel \
-  real_sensor_pose_topic:=/state_estimation \
-  real_cloud_topic:=/cloud_registered \
-  real_grid_frame_id:=lio_odom \
-  goal_frame_id:=lio_odom
-```
-
-如果还保留机器狗 `/robot_tf` 的 `odom -> base_link`，就不要再让它和 SLAM 的 `odom -> livox_frame` 共用同一个 `odom` 名字。
-
-### 5.2 用激光位姿生成机身位姿
-
-FAST_LIO 当前 `/state_estimation.child_frame_id` 是 `livox_frame`，它不是机身中心。真机闭环控制应让 planner 用 `/body_state_estimation`：
-
-```bash
-ros2 launch scan_planner run.launch.py \
-  is_real_world:=true \
-  sensor_type:=lidar \
-  controller_mode:=closed_loop \
-  publish_robot_description:=false \
-  enable_deprecated_zsibot_transport:=true \
-  use_zsibot_udp_client:=true \
-  use_lidar_to_body_odom:=true \
-  lidar_odom_topic:=/state_estimation \
-  body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=scan_base_link \
-  body_odom_sensor_frame_id:=livox_frame \
-  body_odom_world_frame_id:=lio_odom \
-  body_odom_publish_tf:=false \
-  body_to_sensor_x:=0.0 \
-  body_to_sensor_y:=0.0 \
-  body_to_sensor_z:=0.0 \
-  body_to_sensor_roll:=0.0 \
-  body_to_sensor_pitch:=0.0 \
-  body_to_sensor_yaw:=0.0 \
-  real_sensor_pose_topic:=/state_estimation \
-  real_cloud_topic:=/cloud_registered \
-  real_grid_frame_id:=lio_odom \
-  goal_frame_id:=lio_odom \
+  body_frame_id:=omni_base_link \
+  sensor_frame_id:=omni_lidar_link \
+  require_tf_ready:=true \
+  tf_ready_topic:=/omni/tf_manager/ready \
+  real_body_pose_topic:=/omni/tf_manager/body_odom_global \
+  real_cloud_topic:=/cloud_registered_global \
+  real_grid_frame_id:=omni_map \
+  goal_frame_id:=omni_map \
   real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
-
-`body_to_sensor_*` 表示“planner 机身 `scan_base_link` 到激光 `livox_frame`”的外参，单位是米和弧度。上面的 0 只是占位，真机要填实际安装值；外参没确认前，不要发送导航 goal。
 
 验证：
 
 ```bash
-ros2 topic echo /body_state_estimation --once
+ros2 topic echo /omni/tf_manager/body_odom_global --once
 ros2 topic info /scan_planner/cmd_vel
 ros2 topic info /cmd_vel
 ```
@@ -282,7 +266,7 @@ ros2 topic info /cmd_vel
 
 ## 6. 录制并运行 waypoint 路线
 
-确认 `/body_state_estimation` 正常后，启动记录器：
+确认 `/omni/tf_manager/body_odom_global` 正常后，启动记录器：
 
 ```bash
 cd /app/scan_planner_orin_nx_aarch64_20260719
@@ -290,7 +274,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 ros2 run scan_planner keypoint_recorder.py \
-  --odom /body_state_estimation \
+  --odom /omni/tf_manager/body_odom_global \
   --output /app/scan_planner_orin_nx_aarch64_20260719/keypoints.yaml
 ```
 
@@ -304,7 +288,7 @@ s                  保存
 q                  保存并退出
 ```
 
-这些 waypoint 是 `lio_odom` 坐标系下的绝对坐标。
+这些 waypoint 是 `omni_map` 坐标系下的绝对坐标。
 
 使用录好的点运行 `navi_mode=2`：
 
@@ -318,19 +302,16 @@ ros2 launch scan_planner run.launch.py \
   publish_robot_description:=false \
   enable_deprecated_zsibot_transport:=true \
   use_zsibot_bridge:=true \
-  use_lidar_to_body_odom:=true \
-  lidar_odom_topic:=/state_estimation \
-  body_odom_topic:=/body_state_estimation \
-  body_odom_frame_id:=scan_base_link \
-  body_odom_sensor_frame_id:=livox_frame \
-  body_odom_world_frame_id:=lio_odom \
-  body_odom_publish_tf:=false \
-  real_sensor_pose_topic:=/state_estimation \
-  real_cloud_topic:=/cloud_registered \
-  real_grid_frame_id:=lio_odom \
+  body_frame_id:=omni_base_link \
+  sensor_frame_id:=omni_lidar_link \
+  require_tf_ready:=true \
+  tf_ready_topic:=/omni/tf_manager/ready \
+  real_body_pose_topic:=/omni/tf_manager/body_odom_global \
+  real_cloud_topic:=/cloud_registered_global \
+  real_grid_frame_id:=omni_map \
   real_cloud_is_world:=true \
   real_need_extrinsic:=false \
-  goal_frame_id:=lio_odom \
+  goal_frame_id:=omni_map \
   real_cmd_vel_topic:=/scan_planner/cmd_vel
 ```
 
@@ -342,18 +323,20 @@ use_zsibot_udp_client:=true
 
 同时保留 `enable_deprecated_zsibot_transport:=true`；它是旧 direct/UDP 两种
 兼容模式共同的二次确认开关。
-# 当前真机默认接口（lio_map）
+# 当前真机默认接口（Omni TF authority）
 
 > **请优先按本节以及真机测试指南操作。** 本节之前出现的
-> `/state_estimation`、`/cloud_registered`、`/body_state_estimation` 和
-> `lio_odom` 命令是旧链路调试记录，不适用于当前真机默认配置。
+> `/state_estimation*`、`/body_state_estimation*`、`lio_map` 和
+> `livox_frame` 命令是旧链路调试记录，不适用于当前真机默认配置。
 
 本文件后部包含早期 `lio_odom` 调试记录。当前两个 `run_real_planner*.sh` 已统一为：
 
 ```text
-LIDAR_ODOM_TOPIC=/state_estimation_global
-BODY_ODOM_TOPIC=/body_state_estimation_global
-GRID_FRAME_ID=lio_map
+BODY_ODOM_TOPIC=/omni/tf_manager/body_odom_global
+TF_READY_TOPIC=/omni/tf_manager/ready
+GRID_FRAME_ID=omni_map
+BODY_FRAME_ID=omni_base_link
+SENSOR_FRAME_ID=omni_lidar_link
 real_cloud_topic=/cloud_registered_global
 navi_mode=3
 use_global_path_publisher=true

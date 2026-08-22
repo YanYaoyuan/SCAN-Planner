@@ -1,5 +1,5 @@
 # DEPRECATED / OPT-IN ONLY. Used only by run_matrix_planner.sh --control.
-zsibot_cmd_bridge:
+omni_zsibot_cmd_bridge:
   ros__parameters:
     # run_matrix_planner.sh --control overrides this to true through the launch file.
     enable_deprecated_transport: false

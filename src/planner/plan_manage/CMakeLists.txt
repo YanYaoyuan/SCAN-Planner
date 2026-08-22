@@ -6,6 +6,11 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
+option(SCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER
+  "Build the legacy open-loop controller executable" ON)
+option(SCAN_PLANNER_BUILD_SIMULATION_NODES
+  "Build Go2-only kinematic simulation executables" ON)
+
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(bspline_opt REQUIRED)
@@ -72,7 +77,25 @@ target_include_directories(scan_planner_node PRIVATE include)
 ament_target_dependencies(scan_planner_node ${scan_planner_dependencies})
 target_link_libraries(scan_planner_node Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
 
-foreach(target open_loop_controller closed_loop_controller go2_kinematic_sim go2_gait_publisher lidar_to_body_odom global_path_publisher)
+set(scan_planner_runtime_targets
+  scan_planner_node
+  closed_loop_controller
+  global_path_publisher)
+
+if(SCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER)
+  list(APPEND scan_planner_runtime_targets open_loop_controller)
+endif()
+
+if(SCAN_PLANNER_BUILD_SIMULATION_NODES)
+  list(APPEND scan_planner_runtime_targets
+    go2_kinematic_sim
+    go2_gait_publisher)
+endif()
+
+foreach(target IN LISTS scan_planner_runtime_targets)
+  if(target STREQUAL "scan_planner_node")
+    continue()
+  endif()
   add_executable(${target} src/${target}.cpp)
   target_include_directories(${target} PRIVATE include)
   ament_target_dependencies(${target}
@@ -81,9 +104,7 @@ foreach(target open_loop_controller closed_loop_controller go2_kinematic_sim go2
   target_link_libraries(${target} Eigen3::Eigen)
 endforeach()
 
-install(TARGETS
-  scan_planner_node open_loop_controller closed_loop_controller
-  go2_kinematic_sim go2_gait_publisher lidar_to_body_odom global_path_publisher
+install(TARGETS ${scan_planner_runtime_targets}
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME} OPTIONAL)
@@ -129,6 +150,12 @@ if(BUILD_TESTING)
   add_launch_test(test/test_waypoint_parameters.py TIMEOUT 30)
   ament_add_pytest_test(test_legacy_zsibot_opt_in
     test/test_legacy_zsibot_opt_in.py
+    TIMEOUT 30)
+  ament_add_pytest_test(test_omni_node_contract
+    test/test_omni_node_contract.py
+    TIMEOUT 30)
+  ament_add_pytest_test(test_s100_build_contract
+    test/test_s100_build_contract.py
     TIMEOUT 30)
 endif()
 

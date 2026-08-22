@@ -1,4 +1,4 @@
-scan_planner_node:
+omni_scan_planner:
   ros__parameters:
     use_sim_time: false
 
@@ -36,7 +36,8 @@ scan_planner_node:
 
     # body_pose 超时后立即清除局部轨迹，等待新的合法里程计和目标。
     fsm.odom_timeout: 0.30
-    fsm.expected_odom_frame: lio_map
+    fsm.expected_odom_frame: omni_map
+    fsm.require_tf_ready: false
 
     # 局部 B-spline 的执行进度只由真实 odom 空间投影决定，不再使用墙钟时间。
     # movement credit 限制静止/自交路径上的异常前跳；控制器使用相同默认值。
@@ -189,26 +190,26 @@ scan_planner_node:
     grid_map.obstacles_inflation_z_down: 0.4
 
     # 规划、局部地图、全局路径和控制统一使用重定位全局地图坐标。
-    grid_map.frame_id: lio_map
+    grid_map.frame_id: omni_map
 
-    # 可视化用的滑动地图坐标系名字。不要拿它替代 lio_map/livox_frame 做算法输入。
-    grid_map.sliding_map_frame_id: sliding_map
+    # 滑动边界直接在 omni_map 中可视化，不再发布第二棵动态 TF。
+    grid_map.sliding_map_frame_id: ""
 
     # 局部地图 z 方向起点，单位 m。通常保持 0；如果 SLAM z 原点不在地面，需要谨慎调整。
     grid_map.ground_height: 0.0
 
     # 传感器类型: lidar 或 depth。真机 Livox 用 lidar。
     grid_map.sensor_type: lidar
-    grid_map.sensor_frame_id: livox_frame
+    grid_map.sensor_frame_id: omni_lidar_link
     grid_map.lidar_sync_tolerance: 0.05
+    grid_map.tf_lookup_timeout: 0.1
 
     # 点云是否已经在 grid_map.frame_id 世界系下。
-    # SLAM 的 /cloud_registered_global 已经是 lio_map 下点云，所以真机保持 true。
-    # 如果输入是传感器系点云，则应设 false 并正确提供 sensor_pose/extrinsic。
+    # /cloud_registered_global 已经是 omni_map 下点云；其射线原点由同时间戳
+    # 的 omni_map -> omni_lidar_link TF 查询获得。
     grid_map.cloud_is_world: true
 
-    # 是否使用代码内置传感器外参把点云转到机体系。当前真机建议 false，
-    # 因为我们用 /body_state_estimation 处理 livox -> scan_base_link 外参。
+    # 外参只由 omni_tf_manager 管理，Planner 不再保存第二份外参。
     grid_map.need_extrinsic: false
 
     # =========================

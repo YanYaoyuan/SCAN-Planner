@@ -1,5 +1,10 @@
 # SLAM → SCAN-Planner 全局坐标导航链路
 
+> **归档说明：** 本文记录旧 `lio_map/lio_odom/livox_frame` 适配链路。
+> 当前实现已删除 `lidar_to_body_odom`，由 `omni_tf_manager` 提供
+> `omni_map -> omni_base_link` 和
+> `/omni/tf_manager/body_odom_global`。不得把本文旧命令用于当前真机。
+
 ## 1. 最终坐标设计
 
 当前重定位只在启动时执行一次 ICP，并锁定静态变换

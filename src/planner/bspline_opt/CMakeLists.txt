@@ -16,6 +16,13 @@ add_library(bspline_opt
   src/uniform_bspline.cpp
   src/bspline_optimizer.cpp
   src/gradient_descent_optimizer.cpp)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # Rebound geometry is safety-critical. Keep definite and potential
+  # uninitialized reads as hard build failures on the production toolchains.
+  target_compile_options(bspline_opt PRIVATE
+    -Werror=uninitialized
+    -Werror=maybe-uninitialized)
+endif()
 target_include_directories(bspline_opt PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)

@@ -114,6 +114,8 @@ namespace scan_planner
     std::string expected_odom_frame_;
     std::string goal_frame_id_;
     double goal_transform_timeout_;
+    bool require_tf_ready_{false};
+    bool tf_ready_{true};
 
     /* planning data */
     bool trigger_, have_target_, have_odom_, have_new_target_;
@@ -156,6 +158,7 @@ namespace scan_planner
     rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_, heartbeat_timer_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr tf_ready_sub_;
     rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
     nav_msgs::msg::Path::ConstSharedPtr pending_reference_path_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr go2_execution_frozen_sub_;
@@ -241,6 +244,8 @@ namespace scan_planner
     void pathCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg);
     /** @brief Receives validated body odometry. @param msg Body odometry. */
     void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg);
+    /** @brief Revokes planning authority whenever omni_tf_manager is not ready. */
+    void tfReadyCallback(const std_msgs::msg::Bool::ConstSharedPtr &msg);
     /** @brief Receives controller execution-freeze state. @param msg Freeze flag. */
     void go2ExecutionFrozenCallback(const std_msgs::msg::Bool::ConstSharedPtr &msg);
 

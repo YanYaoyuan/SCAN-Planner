@@ -27,12 +27,11 @@ jobs:
       ROS_DISTRO: humble
       ROS_WS: /tmp/scan_planner_ws
       DEBIAN_FRONTEND: noninteractive
-      OMNI_ROBOT_INTERFACES_REPO: https://github.com/lifliu/omni_robot_interfaces.git
       OMNI_ROBOT_INTERFACES_REF: main
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Reset CI workspace and local caches
         run: |
@@ -65,23 +64,30 @@ jobs:
           rosdep init || true
           rosdep update --rosdistro "${ROS_DISTRO}"
 
+      - name: Checkout omni_robot_interfaces
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: YanYaoyuan/omni_robot_interfaces
+          ref: ${{ env.OMNI_ROBOT_INTERFACES_REF }}
+          path: omni_robot_interfaces_source
+          ssh-key: ${{ secrets.OMNI_ROBOT_INTERFACES_DEPLOY_KEY }}
+          persist-credentials: false
+
       - name: Prepare colcon workspace
         run: |
           rsync -a --delete \
             --exclude='.git' \
-            --exclude='.github' \
             --exclude='build' \
             --exclude='build-orin-sysroot' \
             --exclude='install' \
             --exclude='install-orin-sysroot' \
             --exclude='log' \
+            --exclude='omni_robot_interfaces_source' \
             "${GITHUB_WORKSPACE}/" "${ROS_WS}/src/SCAN-Planner/"
-
-      - name: Fetch omni_robot_interfaces
-        run: |
-          git clone --depth 1 --branch "${OMNI_ROBOT_INTERFACES_REF}" \
-            "${OMNI_ROBOT_INTERFACES_REPO}" \
-            "${ROS_WS}/src/omni_robot_interfaces"
+          rsync -a --delete \
+            --exclude='.git' \
+            "${GITHUB_WORKSPACE}/omni_robot_interfaces_source/" \
+            "${ROS_WS}/src/omni_robot_interfaces/"
 
       - name: Install ROS package dependencies
         run: |
@@ -126,7 +132,10 @@ jobs:
           colcon build \
             --packages-up-to scan_planner \
             --event-handlers console_direct+ \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release
+            --cmake-args \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER=OFF \
+              -DSCAN_PLANNER_BUILD_SIMULATION_NODES=OFF
 
       - name: Run planner tests
         run: |
@@ -140,7 +149,7 @@ jobs:
 
       - name: Upload colcon logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: colcon-logs-${{ github.run_id }}
           path: /tmp/scan_planner_ws/log
