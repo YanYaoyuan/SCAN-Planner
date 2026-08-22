@@ -8,6 +8,8 @@
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cv_bridge/cv_bridge.h>
 #include <cmath>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -236,6 +238,13 @@ public:
   Eigen::Vector3d getOrigin();
   /** @brief Returns total voxel count. @return Buffer cell count. */
   int getVoxelNum();
+  /**
+   * @brief Returns the revision of the latest integrated map state.
+   *
+   * The revision is safe to read across threads, but occupancy buffers remain
+   * single-owner data until an immutable MapSnapshot/read-lock API is added.
+   */
+  std::uint64_t mapRevision() const noexcept;
 
   typedef std::shared_ptr<GridMap> Ptr;
 
@@ -244,6 +253,10 @@ public:
 private:
   MappingParameters mp_;
   MappingData md_;
+  std::atomic<std::uint64_t> map_revision_{0};
+
+  /** @brief Advances the map generation after one externally visible mutation. */
+  void advanceMapRevision() noexcept;
 
   /** @brief Receives synchronized depth and pose. @param img Depth image. @param pose Sensor odometry. */
   void depthPoseCallback(const sensor_msgs::msg::Image::ConstSharedPtr& img,
@@ -420,6 +433,7 @@ inline void GridMap::setOccupied(Eigen::Vector3d pos) {
   posToIndex(pos, id);
 
   applyOccupancyUpdate(id, mp_.clamp_max_log_);
+  advanceMapRevision();
 }
 
 inline void GridMap::setOccupancy(Eigen::Vector3d pos, double occ) {
@@ -434,6 +448,7 @@ inline void GridMap::setOccupancy(Eigen::Vector3d pos, double occ) {
   posToIndex(pos, id);
 
   applyOccupancyUpdate(id, occ > 0.5 ? mp_.clamp_max_log_ : mp_.clamp_min_log_);
+  advanceMapRevision();
 }
 
 inline int GridMap::getOccupancy(Eigen::Vector3d pos) {

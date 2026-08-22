@@ -161,5 +161,30 @@ TEST(CandidatePlan, RevisionAuthorityRejectsAndConsumesStaleAttempt)
   EXPECT_TRUE(config_changed.consumed());
 }
 
+TEST(CandidateCommitResult, HasStableDiagnosticNames)
+{
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kCommitted),
+      "committed");
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kAlreadyConsumed),
+      "already_consumed");
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kValidationFailed),
+      "validation_failed");
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kDeadlineExceeded),
+      "deadline_exceeded");
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kTaskChanged),
+      "task_changed");
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kMapChanged),
+      "map_changed");
+  EXPECT_STREQ(
+      candidateCommitResultName(CandidateCommitResult::kConfigChanged),
+      "config_changed");
+}
+
 }  // namespace
 }  // namespace scan_planner

@@ -275,6 +275,11 @@ omni_scan_planner:
     # manager 内部使用的局部规划前视距离，建议和 fsm.planning_horizon 保持一致。
     manager.planning_horizon: 4.0
 
+    # 单次局部规划的端到端预算，使用 steady_clock，单位 s。
+    # 当前在初始化、优化、精修和最终提交边界失败关闭；A*/LBFGS 内循环的
+    # 主动中断将在下一阶段接入，因此单个阶段可能先执行到返回，但超时结果绝不发布。
+    manager.planning_deadline_sec: 0.5
+
     # =========================
     # B-spline optimization weights
     # =========================

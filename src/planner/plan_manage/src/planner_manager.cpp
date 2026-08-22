@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <thread>
 
 namespace scan_planner
@@ -73,6 +75,14 @@ namespace scan_planner
     pp_.feasibility_tolerance_ = get_double("manager.feasibility_tolerance", 0.0);
     pp_.ctrl_pt_dist = get_double("manager.control_points_distance", -1.0);
     pp_.planning_horizon_ = get_double("manager.planning_horizon", 5.0);
+    pp_.planning_deadline_sec_ =
+        get_double("manager.planning_deadline_sec", 0.5);
+    if (!std::isfinite(pp_.planning_deadline_sec_) ||
+        pp_.planning_deadline_sec_ < 1.0e-3)
+    {
+      throw std::invalid_argument(
+          "manager.planning_deadline_sec must be finite and at least 0.001s");
+    }
 
     local_data_.traj_id_ = 0;
     grid_map_.reset(new GridMap);
@@ -95,8 +105,35 @@ namespace scan_planner
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
                                         Eigen::Vector3d local_target_vel, bool flag_polyInit,
                                         bool flag_randomPolyTraj,
-                                        const std::vector<Eigen::Vector3d> &reference_seed)
+                                        const std::vector<Eigen::Vector3d> &reference_seed,
+                                        PlanningContext context,
+                                        const LocalTrajectoryCommitAuthority &commit_authority)
   {
+
+    const auto reject_if_expired = [this, &context](const char *stage) {
+      if (!context.deadline().expired())
+        return false;
+
+      const double elapsed_sec = std::chrono::duration<double>(
+          PlanDeadline::Clock::now() - context.deadline().startTime()).count();
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Planning deadline exceeded after %s (%.3fs, budget %.3fs); "
+          "rejecting candidate [mission='%s', route='%s', task=%lu, map=%lu, config=%lu]",
+          stage,
+          elapsed_sec,
+          std::chrono::duration<double>(context.deadline().budget()).count(),
+          context.missionId().c_str(),
+          context.routeId().c_str(),
+          static_cast<unsigned long>(context.revisions().task),
+          static_cast<unsigned long>(context.revisions().map),
+          static_cast<unsigned long>(context.revisions().config));
+      continuous_failures_count_++;
+      return true;
+    };
+
+    if (reject_if_expired("dispatch"))
+      return false;
 
     static int count = 0;
     std::cout << endl
@@ -367,6 +404,9 @@ namespace scan_planner
     vector<vector<Eigen::Vector3d>> a_star_paths;
     a_star_paths = bspline_optimizer_rebound_->initControlPoints(ctrl_pts, true);
 
+    if (reject_if_expired("initialization"))
+      return false;
+
     t_init = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
     static int vis_id = 0;
@@ -384,6 +424,8 @@ namespace scan_planner
       continuous_failures_count_++;
       return false;
     }
+    if (reject_if_expired("rebound optimization"))
+      return false;
     //visualization_->displayOptimalList( ctrl_pts, vis_id );
 
     t_opt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
@@ -411,11 +453,24 @@ namespace scan_planner
       continuous_failures_count_++;
       return false;
     }
+    if (reject_if_expired("refinement and validation"))
+      return false;
 
     t_refine = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
-    // save planned results
-    updateTrajInfo(pos, node_->now());
+    CandidatePlan<LocalTrajData> candidate(
+        std::move(context), buildLocalTrajData(pos, node_->now()));
+    const CandidateCommitResult commit_result =
+        candidate.tryCommit(true, commit_authority);
+    if (commit_result != CandidateCommitResult::kCommitted)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Rejecting local trajectory at commit boundary: %s",
+          candidateCommitResultName(commit_result));
+      continuous_failures_count_++;
+      return false;
+    }
 
     cout << "total time:\033[42m" << (t_init + t_opt + t_refine)
          << "\033[0m,optimize:" << (t_init + t_opt) << ",refine:" << t_refine << endl;
@@ -607,15 +662,58 @@ namespace scan_planner
 
   void SCANPlannerManager::updateTrajInfo(const UniformBspline &position_traj, const rclcpp::Time time_now)
   {
-    local_data_.start_time_ = time_now;
-    local_data_.position_traj_ = position_traj;
-    local_data_.velocity_traj_ = local_data_.position_traj_.getDerivative();
-    local_data_.acceleration_traj_ = local_data_.velocity_traj_.getDerivative();
-    local_data_.start_pos_ = local_data_.position_traj_.evaluateDeBoorT(0.0);
-    local_data_.duration_ = local_data_.position_traj_.getTimeSum();
-    local_data_.progress_time_ = 0.0;
-    local_data_.progress_arc_length_ = 0.0;
-    local_data_.traj_id_ += 1;
+    LocalTrajData candidate = buildLocalTrajData(position_traj, time_now);
+    candidate.traj_id_ =
+        local_data_.traj_id_ >= std::numeric_limits<int>::max()
+            ? 1
+            : local_data_.traj_id_ + 1;
+    local_data_ = std::move(candidate);
+  }
+
+  PlanDeadline::Duration SCANPlannerManager::planningBudget() const noexcept
+  {
+    return std::chrono::duration_cast<PlanDeadline::Duration>(
+        std::chrono::duration<double>(pp_.planning_deadline_sec_));
+  }
+
+  std::uint64_t SCANPlannerManager::planningConfigRevision() const noexcept
+  {
+    return config_revision_;
+  }
+
+  CandidateCommitResult SCANPlannerManager::commitLocalTrajectory(
+      const PlanningInputRevision &planned_revisions,
+      const PlanningInputRevision &current_revisions,
+      LocalTrajData &&candidate)
+  {
+    if (const auto mismatch =
+            candidateRevisionMismatch(planned_revisions, current_revisions))
+    {
+      return *mismatch;
+    }
+
+    candidate.traj_id_ =
+        local_data_.traj_id_ >= std::numeric_limits<int>::max()
+            ? 1
+            : local_data_.traj_id_ + 1;
+    local_data_ = std::move(candidate);
+    return CandidateCommitResult::kCommitted;
+  }
+
+  LocalTrajData SCANPlannerManager::buildLocalTrajData(
+      const UniformBspline &position_traj,
+      const rclcpp::Time &time_now) const
+  {
+    LocalTrajData candidate;
+    candidate.start_time_ = time_now;
+    candidate.position_traj_ = position_traj;
+    candidate.velocity_traj_ = candidate.position_traj_.getDerivative();
+    candidate.acceleration_traj_ = candidate.velocity_traj_.getDerivative();
+    candidate.start_pos_ = candidate.position_traj_.evaluateDeBoorT(0.0);
+    candidate.duration_ = candidate.position_traj_.getTimeSum();
+    candidate.progress_time_ = 0.0;
+    candidate.progress_arc_length_ = 0.0;
+    return candidate;
   }
 
   bool SCANPlannerManager::checkDynamicFeasibility(UniformBspline position_traj)

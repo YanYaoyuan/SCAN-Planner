@@ -222,6 +222,7 @@ namespace scan_planner
     double ctrl_pt_dist;                  // distance between adjacient B-spline control points
     double feasibility_tolerance_;        // permitted ratio of vel/acc exceeding limits
     double planning_horizon_;
+    double planning_deadline_sec_{0.5};   ///< Absolute budget for one local planning attempt.
 
     /* processing time */
     double time_search_ = 0.0;

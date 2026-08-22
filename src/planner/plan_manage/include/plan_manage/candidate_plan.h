@@ -25,6 +25,29 @@ enum class CandidateCommitResult
   kConfigChanged,
 };
 
+/** @brief Stable diagnostic name for a commit result. */
+inline const char *candidateCommitResultName(CandidateCommitResult result) noexcept
+{
+  switch (result)
+  {
+    case CandidateCommitResult::kCommitted:
+      return "committed";
+    case CandidateCommitResult::kAlreadyConsumed:
+      return "already_consumed";
+    case CandidateCommitResult::kValidationFailed:
+      return "validation_failed";
+    case CandidateCommitResult::kDeadlineExceeded:
+      return "deadline_exceeded";
+    case CandidateCommitResult::kTaskChanged:
+      return "task_changed";
+    case CandidateCommitResult::kMapChanged:
+      return "map_changed";
+    case CandidateCommitResult::kConfigChanged:
+      return "config_changed";
+  }
+  return "unknown";
+}
+
 /** @brief Returns the first stale-input reason, or no value when revisions match. */
 inline std::optional<CandidateCommitResult> candidateRevisionMismatch(
     const PlanningInputRevision &planned,
