@@ -77,7 +77,6 @@ jobs:
         run: |
           rsync -a --delete \
             --exclude='.git' \
-            --exclude='.github' \
             --exclude='build' \
             --exclude='build-orin-sysroot' \
             --exclude='install' \
