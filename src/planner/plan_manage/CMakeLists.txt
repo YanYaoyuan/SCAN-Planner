@@ -146,6 +146,9 @@ if(BUILD_TESTING)
     test/test_planner_heartbeat_gate.cpp)
   target_include_directories(test_planner_heartbeat_gate PRIVATE include)
   ament_target_dependencies(test_planner_heartbeat_gate builtin_interfaces)
+  ament_add_gtest(test_planning_safety_foundation
+    test/test_planning_safety_foundation.cpp)
+  target_include_directories(test_planning_safety_foundation PRIVATE include)
   add_launch_test(test/test_planner_startup.py TIMEOUT 30)
   add_launch_test(test/test_waypoint_parameters.py TIMEOUT 30)
   ament_add_pytest_test(test_legacy_zsibot_opt_in
