@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <optional>
+#include <vector>
 // using namespace std;
 
 namespace scan_planner
@@ -76,6 +78,53 @@ namespace scan_planner
     use_rebound_reference_ = false;
   }
 
+  void BsplineOptimizer::setDeadline(
+      std::chrono::steady_clock::time_point deadline) noexcept
+  {
+    deadline_ = deadline;
+    deadline_active_ = true;
+    deadline_exceeded_ = false;
+    if (a_star_)
+      a_star_->setDeadline(deadline);
+  }
+
+  void BsplineOptimizer::clearDeadline() noexcept
+  {
+    deadline_active_ = false;
+    deadline_exceeded_ = false;
+    deadline_ = std::chrono::steady_clock::time_point::max();
+    if (a_star_)
+      a_star_->clearDeadline();
+  }
+
+  bool BsplineOptimizer::deadlineExceeded() const noexcept
+  {
+    return deadline_exceeded_ ||
+           (deadline_active_ && std::chrono::steady_clock::now() >= deadline_);
+  }
+
+  bool BsplineOptimizer::initializationSucceeded() const noexcept
+  {
+    return initialization_succeeded_;
+  }
+
+  bool BsplineOptimizer::stopForDeadline() noexcept
+  {
+    if (!deadline_active_ || std::chrono::steady_clock::now() < deadline_)
+      return false;
+
+    if (!deadline_exceeded_)
+    {
+      RCLCPP_WARN(
+          rclcpp::get_logger("bspline_opt"),
+          "B-spline optimization stopped at shared planning deadline");
+    }
+    deadline_exceeded_ = true;
+    initialization_succeeded_ = false;
+    force_stop_type_ = STOP_FOR_ERROR;
+    return true;
+  }
+
   void BsplineOptimizer::setBsplineInterval(const double &ts) { bspline_interval_ = ts; }
 
   /* This function is very similar to check_collision_and_rebound(). 
@@ -83,6 +132,11 @@ namespace scan_planner
    * But I will merge then someday.*/
   std::vector<std::vector<Eigen::Vector3d>> BsplineOptimizer::initControlPoints(Eigen::MatrixXd &init_points, bool flag_first_init /*= true*/)
   {
+
+    initialization_succeeded_ = true;
+
+    if (stopForDeadline())
+      return {};
 
     if (flag_first_init)
     {
@@ -104,6 +158,8 @@ namespace scan_planner
     {
       for (double a = 1.0; a >= 0.0; a -= step_size)
       {
+        if (stopForDeadline())
+          return {};
         Eigen::Vector3d sample_pt = a * init_points.col(i - 1) + (1 - a) * init_points.col(i);
         double sample_yaw = estimateSegmentYaw(init_points.col(i - 1), init_points.col(i));
         occ = grid_map_->getInflateOccupancy(sample_pt, sample_yaw);
@@ -156,15 +212,23 @@ namespace scan_planner
     vector<vector<Eigen::Vector3d>> a_star_paths;
     for (size_t i = 0; i < segment_ids.size(); ++i)
     {
+      if (stopForDeadline())
+        return {};
       //cout << "in=" << in.transpose() << " out=" << out.transpose() << endl;
       Eigen::Vector3d in(init_points.col(segment_ids[i].first)), out(init_points.col(segment_ids[i].second));
       ASTAR_RET ret = a_star_->AstarSearch(grid_map_->getResolution(), in, out);
+      if (ret == ASTAR_RET::DEADLINE_EXCEEDED)
+      {
+        stopForDeadline();
+        return {};
+      }
       if (ret == ASTAR_RET::SUCCESS)
       {
         vector<Eigen::Vector3d> path = a_star_->getPath();
         if (path.size() < 2)
         {
           RCLCPP_WARN(rclcpp::get_logger("bspline_opt"), "A-star path has fewer than 2 points");
+          initialization_succeeded_ = false;
           return a_star_paths;
         }
         a_star_paths.push_back(path);
@@ -172,6 +236,8 @@ namespace scan_planner
       else
       {
         RCLCPP_ERROR(rclcpp::get_logger("bspline_opt"), "A-star failed; aborting optimization");
+        initialization_succeeded_ = false;
+        force_stop_type_ = STOP_FOR_ERROR;
         return a_star_paths;
       }
     }
@@ -181,6 +247,8 @@ namespace scan_planner
     vector<std::pair<int, int>> bounds(segment_ids.size());
     for (size_t i = 0; i < segment_ids.size(); i++)
     {
+      if (stopForDeadline())
+        return {};
 
       if (i == 0) // first segment
       {
@@ -258,12 +326,16 @@ namespace scan_planner
       int got_intersection_id = -1;
       for (int j = segment_ids[i].first + 1; j < segment_ids[i].second; ++j)
       {
+        if (stopForDeadline())
+          return {};
         Eigen::Vector3d ctrl_pts_law(cps_.points.col(j + 1) - cps_.points.col(j - 1));
         std::optional<Eigen::Vector3d> intersection_point;
         int Astar_id = a_star_paths[i].size() / 2, last_Astar_id; // Let "Astar_id = id_of_the_most_far_away_Astar_point" will be better, but it needs more computation
         double val = (a_star_paths[i][Astar_id] - cps_.points.col(j)).dot(ctrl_pts_law), last_val = val;
         while (Astar_id >= 0 && Astar_id < (int)a_star_paths[i].size())
         {
+          if (stopForDeadline())
+            return {};
           last_Astar_id = Astar_id;
 
           if (val >= 0)
@@ -302,6 +374,8 @@ namespace scan_planner
           {
             for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
             {
+              if (stopForDeadline())
+                return {};
               Eigen::Vector3d sample_pt = (a / length) * current_intersection + (1 - a / length) * cps_.points.col(j);
               double sample_yaw = estimateControlPointYaw(cps_.points, j);
               occ = grid_map_->getInflateOccupancy(sample_pt, sample_yaw);
@@ -330,6 +404,8 @@ namespace scan_planner
         double val = (a_star_paths[i][Astar_id] - middle_point).dot(ctrl_pts_law), last_val = val;
         while (Astar_id >= 0 && Astar_id < (int)a_star_paths[i].size())
         {
+          if (stopForDeadline())
+            return {};
           last_Astar_id = Astar_id;
 
           if (val >= 0)
@@ -399,15 +475,25 @@ namespace scan_planner
     BsplineOptimizer *opt = reinterpret_cast<BsplineOptimizer *>(func_data);
     // cout << "k=" << k << endl;
     // cout << "opt->flag_continue_to_optimize_=" << opt->flag_continue_to_optimize_ << endl;
-    return (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND);
+    return opt->stopForDeadline() ||
+           opt->force_stop_type_ == STOP_FOR_ERROR ||
+           opt->force_stop_type_ == STOP_FOR_REBOUND;
   }
 
   double BsplineOptimizer::costFunctionRebound(void *func_data, const double *x, double *grad, const int n)
   {
     BsplineOptimizer *opt = reinterpret_cast<BsplineOptimizer *>(func_data);
 
+    if (opt->stopForDeadline())
+    {
+      std::fill(grad, grad + n, 0.0);
+      return std::numeric_limits<double>::max() / 4.0;
+    }
+
     double cost;
     opt->combineCostRebound(x, grad, cost, n);
+
+    opt->stopForDeadline();
 
     opt->iter_num_ += 1;
     return cost;
@@ -417,8 +503,16 @@ namespace scan_planner
   {
     BsplineOptimizer *opt = reinterpret_cast<BsplineOptimizer *>(func_data);
 
+    if (opt->stopForDeadline())
+    {
+      std::fill(grad, grad + n, 0.0);
+      return std::numeric_limits<double>::max() / 4.0;
+    }
+
     double cost;
     opt->combineCostRefine(x, grad, cost, n);
+
+    opt->stopForDeadline();
 
     opt->iter_num_ += 1;
     return cost;
@@ -762,6 +856,9 @@ namespace scan_planner
   bool BsplineOptimizer::check_collision_and_rebound(void)
   {
 
+    if (stopForDeadline())
+      return false;
+
     int end_idx = cps_.size - order_;
 
     /*** Check and segment the initial trajectory according to obstacles ***/
@@ -771,6 +868,9 @@ namespace scan_planner
     int i_end = end_idx - (end_idx - order_) / 3;
     for (int i = order_ - 1; i <= i_end; ++i)
     {
+
+      if (stopForDeadline())
+        return false;
 
       bool occ = grid_map_->getInflateOccupancy(cps_.points.col(i), estimateControlPointYaw(cps_.points, i));
 
@@ -795,6 +895,8 @@ namespace scan_planner
         int j;
         for (j = i - 1; j >= 0; --j)
         {
+          if (stopForDeadline())
+            return false;
           occ = grid_map_->getInflateOccupancy(cps_.points.col(j), estimateControlPointYaw(cps_.points, j));
           if (!occ)
           {
@@ -810,6 +912,8 @@ namespace scan_planner
 
         for (j = i + 1; j < cps_.size; ++j)
         {
+          if (stopForDeadline())
+            return false;
           occ = grid_map_->getInflateOccupancy(cps_.points.col(j), estimateControlPointYaw(cps_.points, j));
 
           if (!occ)
@@ -838,9 +942,16 @@ namespace scan_planner
       vector<vector<Eigen::Vector3d>> a_star_paths;
       for (size_t i = 0; i < segment_ids.size(); ++i)
       {
+        if (stopForDeadline())
+          return false;
         /*** a star search ***/
         Eigen::Vector3d in(cps_.points.col(segment_ids[i].first)), out(cps_.points.col(segment_ids[i].second));
         ASTAR_RET ret = a_star_->AstarSearch(grid_map_->getResolution(), in, out);
+        if (ret == ASTAR_RET::DEADLINE_EXCEEDED)
+        {
+          stopForDeadline();
+          return false;
+        }
         if (ret == ASTAR_RET::SUCCESS)
         {
           vector<Eigen::Vector3d> path = a_star_->getPath();
@@ -862,17 +973,29 @@ namespace scan_planner
           RCLCPP_WARN(rclcpp::get_logger("bspline_opt"),
                       "A-star failed on a collision segment; merge it with the next segment");
         }
+        else if (ret == ASTAR_RET::RESOURCE_LIMIT)
+        {
+          RCLCPP_ERROR(
+              rclcpp::get_logger("bspline_opt"),
+              "A-star resource limit reached during rebound; failing closed");
+          initialization_succeeded_ = false;
+          force_stop_type_ = STOP_FOR_ERROR;
+          return false;
+        }
         else
         {
           RCLCPP_ERROR(rclcpp::get_logger("bspline_opt"), "A-star error");
-          segment_ids.erase(segment_ids.begin() + i);
-          i--;
+          initialization_succeeded_ = false;
+          force_stop_type_ = STOP_FOR_ERROR;
+          return false;
         }
       }
 
       /*** Assign parameters to each segment ***/
       for (size_t i = 0; i < segment_ids.size(); ++i)
       {
+        if (stopForDeadline())
+          return false;
         if (i >= a_star_paths.size() || a_star_paths[i].size() < 2)
         {
           RCLCPP_WARN(rclcpp::get_logger("bspline_opt"),
@@ -888,12 +1011,16 @@ namespace scan_planner
         int got_intersection_id = -1;
         for (int j = segment_ids[i].first + 1; j < segment_ids[i].second; ++j)
         {
+          if (stopForDeadline())
+            return false;
           Eigen::Vector3d ctrl_pts_law(cps_.points.col(j + 1) - cps_.points.col(j - 1));
           std::optional<Eigen::Vector3d> intersection_point;
           int Astar_id = a_star_paths[i].size() / 2, last_Astar_id; // Let "Astar_id = id_of_the_most_far_away_Astar_point" will be better, but it needs more computation
           double val = (a_star_paths[i][Astar_id] - cps_.points.col(j)).dot(ctrl_pts_law), last_val = val;
           while (Astar_id >= 0 && Astar_id < (int)a_star_paths[i].size())
           {
+            if (stopForDeadline())
+              return false;
             last_Astar_id = Astar_id;
 
             if (val >= 0)
@@ -932,6 +1059,8 @@ namespace scan_planner
             {
               for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
               {
+                if (stopForDeadline())
+                  return false;
                 Eigen::Vector3d sample_pt = (a / length) * current_intersection + (1 - a / length) * cps_.points.col(j);
                 double sample_yaw = estimateControlPointYaw(cps_.points, j);
                 bool occ = grid_map_->getInflateOccupancy(sample_pt, sample_yaw);
@@ -1005,6 +1134,9 @@ namespace scan_planner
 
   bool BsplineOptimizer::rebound_optimize()
   {
+    if (stopForDeadline())
+      return false;
+
     iter_num_ = 0;
     int start_id = order_;
     int end_id = this->cps_.size - order_;
@@ -1021,6 +1153,9 @@ namespace scan_planner
     constexpr int MAX_RESART_NUMS_SET = 3;
     do
     {
+      if (stopForDeadline())
+        return false;
+
       /* ---------- prepare ---------- */
       min_cost_ = std::numeric_limits<double>::max();
       iter_num_ = 0;
@@ -1028,8 +1163,9 @@ namespace scan_planner
       flag_occ = false;
       success = false;
 
-      double q[variable_num_];
-      memcpy(q, cps_.points.data() + 3 * start_id, variable_num_ * sizeof(q[0]));
+      std::vector<double> q(static_cast<std::size_t>(variable_num_));
+      memcpy(q.data(), cps_.points.data() + 3 * start_id,
+             variable_num_ * sizeof(q[0]));
 
       lbfgs::lbfgs_parameter_t lbfgs_params;
       lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
@@ -1039,10 +1175,13 @@ namespace scan_planner
 
       /* ---------- optimize ---------- */
       t1 = std::chrono::steady_clock::now();
-      int result = lbfgs::lbfgs_optimize(variable_num_, q, &final_cost, BsplineOptimizer::costFunctionRebound, NULL, BsplineOptimizer::earlyExit, this, &lbfgs_params);
+      int result = lbfgs::lbfgs_optimize(variable_num_, q.data(), &final_cost, BsplineOptimizer::costFunctionRebound, NULL, BsplineOptimizer::earlyExit, this, &lbfgs_params);
       t2 = std::chrono::steady_clock::now();
       double time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
       double total_time_ms = std::chrono::duration<double, std::milli>(t2 - t0).count();
+
+      if (stopForDeadline())
+        return false;
 
       /* ---------- success temporary, check collision again ---------- */
       if (result == lbfgs::LBFGS_CONVERGENCE ||
@@ -1059,6 +1198,8 @@ namespace scan_planner
         double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution());
         for (double t = tm; t < tmp * 2 / 3; t += t_step) // Only check the closest 2/3 partition of the whole trajectory.
         {
+          if (stopForDeadline())
+            return false;
           Eigen::Vector3d pos = traj.evaluateDeBoorT(t);
           Eigen::Vector3d pos_next = traj.evaluateDeBoorT(std::min(t + t_step, tmp));
           flag_occ = grid_map_->getInflateOccupancy(pos, estimateSegmentYaw(pos, pos_next));
@@ -1090,6 +1231,8 @@ namespace scan_planner
         {
           restart_nums++;
           initControlPoints(cps_.points, false);
+          if (!initializationSucceeded())
+            return false;
           new_lambda2_ *= 2;
 
           printf("\033[32miter(+1)=%d,time(ms)=%5.3f,keep optimizing\n\033[0m", iter_num_, time_ms);
@@ -1116,28 +1259,37 @@ namespace scan_planner
 
   bool BsplineOptimizer::refine_optimize()
   {
+    if (stopForDeadline())
+      return false;
+
     iter_num_ = 0;
     int start_id = order_;
     int end_id = this->cps_.points.cols() - order_;
     variable_num_ = 3 * (end_id - start_id);
 
-    double q[variable_num_];
+    std::vector<double> q(static_cast<std::size_t>(variable_num_));
     double final_cost;
 
-    memcpy(q, cps_.points.data() + 3 * start_id, variable_num_ * sizeof(q[0]));
+    memcpy(q.data(), cps_.points.data() + 3 * start_id,
+           variable_num_ * sizeof(q[0]));
 
     double origin_lambda4 = lambda4_;
     bool flag_safe = true;
     int iter_count = 0;
     do
     {
+      if (stopForDeadline())
+        return false;
+
       lbfgs::lbfgs_parameter_t lbfgs_params;
       lbfgs::lbfgs_load_default_parameters(&lbfgs_params);
       lbfgs_params.mem_size = 16;
       lbfgs_params.max_iterations = 200;
       lbfgs_params.g_epsilon = 0.001;
 
-      int result = lbfgs::lbfgs_optimize(variable_num_, q, &final_cost, BsplineOptimizer::costFunctionRefine, NULL, NULL, this, &lbfgs_params);
+      int result = lbfgs::lbfgs_optimize(variable_num_, q.data(), &final_cost, BsplineOptimizer::costFunctionRefine, NULL, BsplineOptimizer::earlyExit, this, &lbfgs_params);
+      if (stopForDeadline())
+        return false;
       if (result == lbfgs::LBFGS_CONVERGENCE ||
           result == lbfgs::LBFGSERR_MAXIMUMITERATION ||
           result == lbfgs::LBFGS_ALREADY_MINIMIZED ||
@@ -1157,6 +1309,8 @@ namespace scan_planner
       double t_step = (tmp - tm) / ((traj.evaluateDeBoorT(tmp) - traj.evaluateDeBoorT(tm)).norm() / grid_map_->getResolution()); // Step size is defined as the maximum size that can passes through every grid.
       for (double t = tm; t < tmp * 2 / 3; t += t_step)
       {
+        if (stopForDeadline())
+          return false;
         Eigen::Vector3d pos = traj.evaluateDeBoorT(t);
         Eigen::Vector3d pos_next = traj.evaluateDeBoorT(std::min(t + t_step, tmp));
         if (grid_map_->getInflateOccupancy(pos, estimateSegmentYaw(pos, pos_next)))

@@ -5,7 +5,10 @@
 #include <gtest/gtest.h>
 
 #include <Eigen/Core>
+#include <bspline_opt/bspline_optimizer.h>
 #include <bspline_opt/uniform_bspline.h>
+
+#include <chrono>
 
 TEST(UniformBspline, EvaluatesLinearControlPoints)
 {
@@ -28,4 +31,14 @@ TEST(UniformBspline, DerivativeMatchesLinearSlope)
   EXPECT_NEAR(velocity.x(), 2.0, 1e-9);
   EXPECT_NEAR(velocity.y(), 0.0, 1e-9);
   EXPECT_NEAR(velocity.z(), 0.0, 1e-9);
+}
+
+TEST(BsplineOptimizerDeadline, ExposesSharedDeadlineState)
+{
+  scan_planner::BsplineOptimizer optimizer;
+  optimizer.setDeadline(std::chrono::steady_clock::now());
+  EXPECT_TRUE(optimizer.deadlineExceeded());
+
+  optimizer.clearDeadline();
+  EXPECT_FALSE(optimizer.deadlineExceeded());
 }

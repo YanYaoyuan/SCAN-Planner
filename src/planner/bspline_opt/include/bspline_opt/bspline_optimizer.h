@@ -12,6 +12,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include "bspline_opt/lbfgs.hpp"
 
+#include <chrono>
+
 // Gradient and elastic band optimization
 
 // Input: a signed distance field and a sequence of points
@@ -90,6 +92,14 @@ namespace scan_planner
     void setReboundReference(const Eigen::MatrixXd &points);
     /** @brief Disables and clears the rebound reference. */
     void clearReboundReference();
+    /** @brief Sets the absolute deadline shared by all search and optimization stages. */
+    void setDeadline(std::chrono::steady_clock::time_point deadline) noexcept;
+    /** @brief Disables deadline cancellation for standalone use. */
+    void clearDeadline() noexcept;
+    /** @brief Reports whether the active planning deadline has expired. */
+    bool deadlineExceeded() const noexcept;
+    /** @brief Reports whether the latest control-point initialization completed. */
+    bool initializationSucceeded() const noexcept;
 
     /** @brief Sets a geometric guide path. @param guide_pt Ordered guide points. */
     void setGuidePath(const vector<Eigen::Vector3d> &guide_pt);
@@ -129,7 +139,7 @@ namespace scan_planner
       DONT_STOP,
       STOP_FOR_REBOUND,
       STOP_FOR_ERROR
-    } force_stop_type_;
+    } force_stop_type_{DONT_STOP};
 
     // main input
     // Eigen::MatrixXd control_points_;     // B-spline control points, N x dim
@@ -165,6 +175,14 @@ namespace scan_planner
     ControlPoints cps_;
     Eigen::MatrixXd rebound_reference_;
     bool use_rebound_reference_{false};
+    bool deadline_active_{false};
+    bool deadline_exceeded_{false};
+    bool initialization_succeeded_{true};
+    std::chrono::steady_clock::time_point deadline_{
+        std::chrono::steady_clock::time_point::max()};
+
+    /** @brief Marks the optimizer failed when the shared deadline expires. */
+    bool stopForDeadline() noexcept;
 
     /* cost function */
     /* calculate each part of cost function with control points q as input */

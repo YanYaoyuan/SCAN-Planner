@@ -135,6 +135,9 @@ namespace scan_planner
     if (reject_if_expired("dispatch"))
       return false;
 
+    bspline_optimizer_rebound_->setDeadline(
+        context.deadline().expirationTime());
+
     static int count = 0;
     std::cout << endl
               << "[rebo replan]: -------------------------------------" << count++ << std::endl;
@@ -406,6 +409,14 @@ namespace scan_planner
 
     if (reject_if_expired("initialization"))
       return false;
+    if (!bspline_optimizer_rebound_->initializationSucceeded())
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Local planning initialization failed or exceeded a hard resource limit");
+      continuous_failures_count_++;
+      return false;
+    }
 
     t_init = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
@@ -418,14 +429,14 @@ namespace scan_planner
     /*** STEP 2: OPTIMIZE ***/
     bool flag_step_1_success = bspline_optimizer_rebound_->BsplineOptimizeTrajRebound(ctrl_pts, ts);
     cout << "first_optimize_step_success=" << flag_step_1_success << endl;
+    if (reject_if_expired("rebound optimization"))
+      return false;
     if (!flag_step_1_success)
     {
       // visualization_->displayOptimalList( ctrl_pts, vis_id );
       continuous_failures_count_++;
       return false;
     }
-    if (reject_if_expired("rebound optimization"))
-      return false;
     //visualization_->displayOptimalList( ctrl_pts, vis_id );
 
     t_opt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
@@ -447,6 +458,8 @@ namespace scan_planner
         pos = UniformBspline(optimal_control_points, 3, ts);
     }
 
+    if (reject_if_expired("trajectory refinement"))
+      return false;
     if (!flag_step_2_success || !checkDynamicFeasibility(pos))
     {
       printf("\033[34mThis refined trajectory is unsafe or dynamically infeasible. Skip publishing it.\n\033[0m");
