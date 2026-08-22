@@ -76,6 +76,12 @@ target_include_directories(trajectory_acceptance_validator PUBLIC
 ament_target_dependencies(trajectory_acceptance_validator bspline_opt)
 target_link_libraries(trajectory_acceptance_validator Eigen3::Eigen)
 
+add_library(reference_route STATIC src/reference_route.cpp)
+target_include_directories(reference_route PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(reference_route Eigen3::Eigen)
+
 add_executable(scan_planner_node
   src/scan_planner_node.cpp
   src/scan_replan_fsm.cpp
@@ -84,7 +90,8 @@ add_executable(scan_planner_node
 target_include_directories(scan_planner_node PRIVATE include)
 ament_target_dependencies(scan_planner_node ${scan_planner_dependencies})
 target_link_libraries(scan_planner_node
-  trajectory_acceptance_validator Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
+  reference_route trajectory_acceptance_validator
+  Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
 
 set(scan_planner_runtime_targets
   scan_planner_node
@@ -115,7 +122,7 @@ endforeach()
 
 install(TARGETS ${scan_planner_runtime_targets}
   DESTINATION lib/${PROJECT_NAME})
-install(TARGETS trajectory_acceptance_validator
+install(TARGETS reference_route trajectory_acceptance_validator
   EXPORT export_scan_planner_algorithms
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -134,7 +141,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_reference_path_tracker
     test/test_reference_path_tracker.cpp)
   target_include_directories(test_reference_path_tracker PRIVATE include)
-  target_link_libraries(test_reference_path_tracker Eigen3::Eigen)
+  target_link_libraries(test_reference_path_tracker reference_route Eigen3::Eigen)
+  ament_add_gtest(test_reference_route
+    test/test_reference_route.cpp)
+  target_include_directories(test_reference_route PRIVATE include)
+  target_link_libraries(test_reference_route reference_route Eigen3::Eigen)
   ament_add_gtest(test_yaw_command_filter
     test/test_yaw_command_filter.cpp)
   target_include_directories(test_yaw_command_filter PRIVATE include)

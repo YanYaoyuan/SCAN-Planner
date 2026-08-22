@@ -6,10 +6,12 @@
 #define PLAN_MANAGE__REFERENCE_PATH_TRACKER_H_
 
 #include <Eigen/Core>
+#include <plan_manage/reference_route.h>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -90,24 +92,10 @@ public:
     if (points.size() < 2 || !odom_position.allFinite())
       throw std::invalid_argument("reference route requires finite start data");
 
-    points_ = points;
-    cumulative_lengths_.assign(points_.size(), 0.0);
-    for (std::size_t index = 0; index < points_.size(); ++index)
-    {
-      if (!points_[index].allFinite())
-        throw std::invalid_argument("reference route contains a non-finite point");
-      if (index == 0)
-        continue;
-      const double segment_length =
-          (points_[index] - points_[index - 1]).norm();
-      if (!std::isfinite(segment_length) || segment_length <= 1.0e-9)
-        throw std::invalid_argument("reference route contains duplicate points");
-      cumulative_lengths_[index] =
-          cumulative_lengths_[index - 1] + segment_length;
-    }
-
-    if (cumulative_lengths_.back() <= 1.0e-9)
-      throw std::invalid_argument("reference route has zero length");
+    // The legacy tracker intentionally preserves the supplied polyline as an
+    // open geometric domain. Its closed-loop completion gate remains tracker
+    // state until the FSM adopts ReferenceRoute's native seam semantics.
+    route_.emplace(points, false);
 
     closed_ = closed;
     departed_start_ = !closed;
@@ -121,8 +109,7 @@ public:
   /** @brief Clears the active route and all progress state. */
   void clear()
   {
-    points_.clear();
-    cumulative_lengths_.clear();
+    route_.reset();
     closed_ = false;
     departed_start_ = false;
     progress_ = 0.0;
@@ -133,7 +120,7 @@ public:
   /** @brief Returns whether a valid route is active. */
   bool active() const
   {
-    return points_.size() >= 2 && cumulative_lengths_.size() == points_.size();
+    return route_.has_value();
   }
 
   /** @brief Returns whether the active route is closed. */
@@ -157,7 +144,7 @@ public:
   /** @brief Returns total reference-route arc length in metres. */
   double totalLength() const
   {
-    return active() ? cumulative_lengths_.back() : 0.0;
+    return active() ? route_->totalLength() : 0.0;
   }
 
   /** @brief Returns remaining reference-route arc length in metres. */
@@ -199,7 +186,7 @@ public:
       have_last_odom_ = true;
     }
 
-    if ((odom_position.head<2>() - points_.front().head<2>()).norm() >=
+    if ((odom_position.head<2>() - route_->points().front().head<2>()).norm() >=
         config_.departure_distance)
     {
       departed_start_ = true;
@@ -215,13 +202,15 @@ public:
     double best_distance_squared =
         (pointAt(progress_).head<2>() - odom_position.head<2>()).squaredNorm();
 
+    const auto &points = route_->points();
+    const auto &cumulative_lengths = route_->cumulativeLengths();
     for (std::size_t segment = segmentIndex(progress_);
-         segment + 1 < points_.size(); ++segment)
+         segment + 1 < points.size(); ++segment)
     {
       const double segment_start =
-          std::max(progress_, cumulative_lengths_[segment]);
+          std::max(progress_, cumulative_lengths[segment]);
       const double segment_end =
-          std::min(search_end, cumulative_lengths_[segment + 1]);
+          std::min(search_end, cumulative_lengths[segment + 1]);
       if (segment_end < segment_start)
         continue;
 
@@ -251,7 +240,7 @@ public:
         best_progress = projected_progress;
       }
 
-      if (cumulative_lengths_[segment + 1] >= search_end - 1.0e-9)
+      if (cumulative_lengths[segment + 1] >= search_end - 1.0e-9)
         break;
     }
 
@@ -275,18 +264,7 @@ public:
   {
     if (!active())
       return Eigen::Vector3d::Zero();
-    const double clamped =
-        std::clamp(arc_length, 0.0, totalLength());
-    const std::size_t segment = segmentIndex(clamped);
-    if (segment + 1 >= points_.size())
-      return points_.back();
-    const double segment_length =
-        cumulative_lengths_[segment + 1] - cumulative_lengths_[segment];
-    if (segment_length <= 1.0e-12)
-      return points_[segment];
-    const double ratio =
-        (clamped - cumulative_lengths_[segment]) / segment_length;
-    return points_[segment] + ratio * (points_[segment + 1] - points_[segment]);
+    return route_->pointAt(std::clamp(arc_length, 0.0, totalLength()));
   }
 
   /**
@@ -298,37 +276,20 @@ public:
   {
     if (!active())
       return Eigen::Vector3d::Zero();
-    const std::size_t segment = segmentIndex(
-        std::clamp(arc_length, 0.0, totalLength()));
-    const std::size_t next = std::min(segment + 1, points_.size() - 1);
-    Eigen::Vector3d tangent = points_[next] - points_[segment];
-    if (tangent.norm() <= 1.0e-12 && segment > 0)
-      tangent = points_[segment] - points_[segment - 1];
-    return tangent.norm() > 1.0e-12 ? tangent.normalized() :
-                                      Eigen::Vector3d::Zero();
+    return route_->tangentAt(std::clamp(arc_length, 0.0, totalLength()));
   }
 
 private:
   /** @brief Finds the segment containing an arc length. */
   std::size_t segmentIndex(double arc_length) const
   {
-    if (cumulative_lengths_.size() < 2)
+    if (!route_)
       return 0;
-    const auto upper = std::upper_bound(
-        cumulative_lengths_.begin(),
-        cumulative_lengths_.end(),
-        arc_length + 1.0e-12);
-    if (upper == cumulative_lengths_.begin())
-      return 0;
-    return std::min<std::size_t>(
-        static_cast<std::size_t>(
-            std::distance(cumulative_lengths_.begin(), upper) - 1),
-        cumulative_lengths_.size() - 2);
+    return route_->segmentIndex(arc_length);
   }
 
   Config config_;
-  std::vector<Eigen::Vector3d> points_;
-  std::vector<double> cumulative_lengths_;
+  std::optional<ReferenceRoute> route_;
   Eigen::Vector3d last_odom_position_{Eigen::Vector3d::Zero()};
   double progress_{0.0};
   double movement_credit_{0.0};
