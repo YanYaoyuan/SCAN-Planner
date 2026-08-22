@@ -1,0 +1,3 @@
+[submodule "zsibot_sdk/genisom_model"]
+	path = zsibot_sdk/genisom_model
+	url = https://github.com/zsibot/genisom_model.git
