@@ -77,6 +77,7 @@ ament_target_dependencies(trajectory_acceptance_validator bspline_opt)
 target_link_libraries(trajectory_acceptance_validator Eigen3::Eigen)
 
 add_library(reference_route STATIC
+  src/local_route_progress_map.cpp
   src/reference_route.cpp
   src/route_progress_tracker.cpp)
 target_include_directories(reference_route PUBLIC
@@ -152,6 +153,10 @@ if(BUILD_TESTING)
     test/test_route_progress_tracker.cpp)
   target_include_directories(test_route_progress_tracker PRIVATE include)
   target_link_libraries(test_route_progress_tracker reference_route Eigen3::Eigen)
+  ament_add_gtest(test_local_route_progress_map
+    test/test_local_route_progress_map.cpp)
+  target_include_directories(test_local_route_progress_map PRIVATE include)
+  target_link_libraries(test_local_route_progress_map reference_route Eigen3::Eigen)
   ament_add_gtest(test_yaw_command_filter
     test/test_yaw_command_filter.cpp)
   target_include_directories(test_yaw_command_filter PRIVATE include)
