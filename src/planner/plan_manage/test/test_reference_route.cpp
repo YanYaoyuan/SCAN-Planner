@@ -136,6 +136,18 @@ TEST(ReferenceRoute, ClosedRouteSamplesAcrossSeamWithUnwrappedArcLength)
   EXPECT_LT(route.pointAt(4.0 - 1.0e-6).y(), 2.0e-6);
 }
 
+TEST(ReferenceRoute, AcceptsRoundedIntegralSpacingAcrossClosedSeam)
+{
+  const ReferenceRoute route(squareLoop(), true);
+  const double start_s = route.totalLength() - 0.25;
+  const auto range = route.sampleRange(start_s, start_s + 0.4, 0.05);
+
+  ASSERT_TRUE(range.success());
+  EXPECT_DOUBLE_EQ(range.samples.front().route_s, start_s);
+  EXPECT_DOUBLE_EQ(range.samples.back().route_s, start_s + 0.4);
+  EXPECT_TRUE(containsVertexAt(range, route.totalLength()));
+}
+
 TEST(ReferenceRoute, EnforcesSampleBudgetBeforeLargeAllocation)
 {
   ReferenceRoute::Config config;

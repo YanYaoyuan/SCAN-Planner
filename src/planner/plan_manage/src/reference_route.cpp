@@ -257,11 +257,16 @@ ReferenceRouteRangeResult ReferenceRoute::sampleRange(
   {
     const double route_s =
         start_s + spacing * static_cast<double>(index);
-    if (!std::isfinite(route_s) || route_s <= start_s || route_s >= end_s)
+    if (!std::isfinite(route_s) || route_s <= start_s)
     {
       output.status = ReferenceRouteRangeStatus::kInvalidInput;
       return output;
     }
+    // ceil(span / spacing) can be one too large after floating-point
+    // rounding. The exact end is appended below, so stop instead of rejecting
+    // an otherwise valid range or inserting a near-duplicate endpoint.
+    if (route_s >= end_s - kArcTolerance)
+      break;
     coordinates.emplace_back(route_s, false);
   }
   if (end_s > start_s + kArcTolerance)
