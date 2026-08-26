@@ -39,7 +39,9 @@ namespace scan_planner
 
   public:
     /** @brief Constructs an empty spline. */
-    UniformBspline() {}
+    UniformBspline()
+      : p_(0), n_(-1), m_(0), interval_(0.0), limit_vel_(0.0),
+        limit_acc_(0.0), feasibility_tolerance_(0.0) {}
     /**
      * @brief Constructs a uniform B-spline.
      * @param points Control-point matrix with one control point per column.
