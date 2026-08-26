@@ -61,10 +61,19 @@ fi
 
 mkdir -p "${TROS_ROOT}/src/SCAN-Planner" "${TROS_ROOT}/src/omni_robot_interfaces"
 
-log "cloning robot_dev_config at ${ROBOT_DEV_CONFIG_REF}"
-git clone --filter=blob:none \
-  https://github.com/D-Robotics/robot_dev_config.git \
-  "${ROBOT_DEV_CONFIG_DIR}"
+if [[ ! -d "${ROBOT_DEV_CONFIG_DIR}/.git" ]]; then
+  log "cloning robot_dev_config at ${ROBOT_DEV_CONFIG_REF}"
+  git clone --filter=blob:none \
+    https://github.com/D-Robotics/robot_dev_config.git \
+    "${ROBOT_DEV_CONFIG_DIR}"
+else
+  log "reusing robot_dev_config checkout at ${ROBOT_DEV_CONFIG_REF}"
+  if ! git -C "${ROBOT_DEV_CONFIG_DIR}" cat-file -e \
+      "${ROBOT_DEV_CONFIG_REF}^{commit}" 2>/dev/null; then
+    git -C "${ROBOT_DEV_CONFIG_DIR}" fetch --no-tags origin \
+      "${ROBOT_DEV_CONFIG_REF}"
+  fi
+fi
 git -C "${ROBOT_DEV_CONFIG_DIR}" checkout --detach "${ROBOT_DEV_CONFIG_REF}"
 
 log "copying SCAN-Planner source into the cross workspace"
@@ -135,9 +144,13 @@ shallow_checkout() {
   local target=$3
   local attempt
 
-  mkdir -p "${target}"
-  git -C "${target}" init --quiet
-  git -C "${target}" remote add origin "${url}"
+  if [[ ! -d "${target}/.git" ]]; then
+    mkdir -p "${target}"
+    git -C "${target}" init --quiet
+    git -C "${target}" remote add origin "${url}"
+  else
+    git -C "${target}" remote set-url origin "${url}"
+  fi
 
   # Force HTTP/1.1 because the local proxy corrupted a long HTTP/2 TLS stream.
   # Low-speed detection prevents an otherwise healthy process from hanging
@@ -469,9 +482,15 @@ source /opt/ros/humble/setup.bash
 set -u
 
 echo "=== Build S100 production core ==="
+# An incremental local build may retain the previous deployable runtime below
+# the colcon workspace. Mark it as generated output so package discovery never
+# mistakes its copied package.xml files for a second source tree.
+if [[ -d runtime ]]; then
+  : > runtime/COLCON_IGNORE
+fi
 bash robot_dev_config/build.sh \
   -p S100 \
-  -c '-DSCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER=OFF -DSCAN_PLANNER_BUILD_SIMULATION_NODES=OFF' \
+  -c '-DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_SKIP_RPATH=ON -DCMAKE_SKIP_INSTALL_RPATH=ON -DSCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER=OFF -DSCAN_PLANNER_BUILD_SIMULATION_NODES=OFF' \
   -r '--packages-select omni_robot_interfaces scan_planner_msgs plan_env path_searching bspline_opt traj_utils scan_planner'
 
 # robot_dev_config/build.sh swallows the colcon exit status. These checks make
@@ -486,6 +505,14 @@ test -f install/share/scan_planner/package.xml
 test -x install/lib/scan_planner/scan_planner_node
 test -x install/lib/scan_planner/closed_loop_controller
 test -x install/lib/scan_planner/global_path_publisher
+grep -qx 'CMAKE_BUILD_TYPE:STRING=Release' build/scan_planner/CMakeCache.txt
+grep -qx 'BUILD_TESTING:BOOL=OFF' build/scan_planner/CMakeCache.txt
+for cmake_package in omni_robot_interfaces scan_planner_msgs scan_planner; do
+  grep -qx 'CMAKE_SKIP_RPATH:BOOL=ON' \
+    "build/${cmake_package}/CMakeCache.txt"
+  grep -qx 'CMAKE_SKIP_INSTALL_RPATH:BOOL=ON' \
+    "build/${cmake_package}/CMakeCache.txt"
+done
 
 # The S100 artifact is a production overlay, not a simulator or an SDK owner.
 for excluded_path in \
@@ -505,22 +532,52 @@ done
 
 echo "=== Verify output architecture ==="
 elf_count=0
-while IFS= read -r file_path; do
+while IFS= read -r -d '' file_path; do
   file_info=$(file "${file_path}")
   if grep -q ELF <<<"${file_info}"; then
     echo "${file_info}"
-    grep -Eq 'ARM aarch64|ARM64' <<<"${file_info}"
+    if ! grep -Eq 'ARM aarch64|ARM64' <<<"${file_info}"; then
+      echo "ERROR: non-ARM64 ELF in S100 install: ${file_info}" >&2
+      exit 1
+    fi
     elf_count=$((elf_count + 1))
   fi
-done < <(find install -type f -perm /111)
+done < <(find install -type f -print0)
 
 if (( elf_count == 0 )); then
   echo 'ERROR: no executable ARM64 ELF files were produced' >&2
   exit 1
 fi
 
+echo "=== Assemble deployable S100 runtime ==="
+bash src/SCAN-Planner/scripts/package_s100_runtime.sh \
+  install \
+  ../sysroot_docker \
+  runtime
+
+test -x runtime/bin/scan_planner_node
+test -x runtime/bin/closed_loop_controller
+test -x runtime/bin/global_path_publisher
+test -x runtime/bin/run_product_planner.sh
+test -f runtime/config/scan_planner/planner.yaml
+test -s runtime/lib/DEPENDENCIES.txt
+for interface_package in omni_robot_interfaces scan_planner_msgs; do
+  if ! find runtime/local runtime/lib -type f \
+      -path "*/python3.10/*-packages/${interface_package}/*.so" \
+      -print -quit 2>/dev/null | grep -q .; then
+    echo "ERROR: missing Python typesupport for ${interface_package}" >&2
+    exit 1
+  fi
+done
+if find runtime/lib -maxdepth 1 -type f -name '*.a' -print -quit | grep -q .; then
+  echo 'ERROR: static archives leaked into runtime bundle' >&2
+  exit 1
+fi
+
 du -sh install
+du -sh runtime
 echo "SCAN-Planner S100 core cross build completed"
 CONTAINER
 
 log "build output: ${TROS_ROOT}/install"
+log "runtime bundle: ${TROS_ROOT}/runtime"

@@ -161,3 +161,4 @@ S100_CLEAN="${S100_CLEAN:-1}" \
 
 log "local S100 build succeeded"
 log "install overlay: ${LOCAL_BASE}/workspace/cc_ws/tros_ws/install"
+log "deployable runtime: ${LOCAL_BASE}/workspace/cc_ws/tros_ws/runtime"
