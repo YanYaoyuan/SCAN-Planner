@@ -205,6 +205,15 @@ S100 产品产物不会构建或打包 Go2 仿真节点、地图生成/本地感
 运行仿真。`go2_description` 是可选的可视化资源，不再作为规划器硬依赖；使用
 前需单独构建该包，并显式传入 `publish_robot_description:=true`。
 
+交叉编译后会从全部 ARM64 ELF 递归解析 `DT_NEEDED`，将 PCL、OpenCV、VTK、
+Orocos KDL 及所需 ROS 类型支持等运行库收集到 `runtime/lib`，并生成
+`runtime/lib/DEPENDENCIES.txt`。glibc 和动态加载器仍由 S100 系统提供。依赖无法
+从固定 ROS/sysroot 解析、产物混入非 ARM64 ELF 或依赖清单为空时，构建直接失败。
+运行包当前为普通 `tar.gz`，暂不附加 SHA-256、签名或加密文件。
+产物不包含算法静态库、头文件、Go2/地图仿真、RViz 或旧 ZsiBot bridge；
+`bin/run_product_planner.sh` 固定走真机闭环模式，并等待
+`/omni/tf_manager/ready` 后启动 Planner。
+
 开发机本地执行完整 S100 交叉编译：
 
 ```bash
@@ -221,12 +230,25 @@ OMNI_ROBOT_INTERFACES_SOURCE=/absolute/path/to/omni_robot_interfaces \
 ```
 
 构建缓存和输出位于 `/data/scan-planner-s100-local`，Docker 数据复用
-`/data/docker-s100`，不会操作系统 Docker daemon。最终 ROS 2 merged-install
-overlay 位于：
+`/data/docker-s100`，镜像归档长期缓存于 `/data/omni-s100-cache/images`，不会
+操作系统 Docker daemon。脚本退出（包括构建失败）时会停止该专用 daemon、停止
+残留的本次构建容器并释放共享锁；SCAN-Planner 与 omni_slam 的本地 S100 构建不能
+并发使用同一个 `S100_DOCKER_BASE`。中间 ROS 2 install 位于
+`.../tros_ws/install`，最终可部署运行目录位于：
 
 ```text
-/data/scan-planner-s100-local/workspace/cc_ws/tros_ws/install
+/data/scan-planner-s100-local/workspace/cc_ws/tros_ws/runtime
 ```
+
+缓存和运行目录均可覆盖，例如：
+
+```bash
+S100_IMAGE_CACHE_DIR=/mnt/build-cache/s100-images \
+S100_DOCKER_BASE=/mnt/build-cache/s100-docker \
+  ./scripts/test_s100_local.sh
+```
+
+如需指定完整镜像文件路径，可设置 `S100_IMAGE_ARCHIVE=/absolute/path/image.tar.gz`。
 
 GitHub Actions 中的 `build-s100.yml` 使用同一份 `build_s100_cross.sh`，并验证
 核心可执行文件为 ARM64，同时对所有被排除组件做负向产物检查。

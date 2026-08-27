@@ -12,10 +12,20 @@ using namespace Eigen;
 
 AStar::~AStar()
 {
+    if (GridNodeMap_ == nullptr)
+        return;
+
     for (int i = 0; i < POOL_SIZE_(0); i++)
+    {
         for (int j = 0; j < POOL_SIZE_(1); j++)
+        {
             for (int k = 0; k < POOL_SIZE_(2); k++)
                 delete GridNodeMap_[i][j][k];
+            delete[] GridNodeMap_[i][j];
+        }
+        delete[] GridNodeMap_[i];
+    }
+    delete[] GridNodeMap_;
 }
 
 void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
@@ -38,6 +48,28 @@ void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
     }
 
     grid_map_ = occ_map;
+}
+
+void AStar::setDeadline(Clock::time_point deadline) noexcept
+{
+    deadline_ = deadline;
+    deadline_active_ = true;
+}
+
+void AStar::clearDeadline() noexcept
+{
+    deadline_active_ = false;
+    deadline_ = Clock::time_point::max();
+}
+
+bool AStar::deadlineExceeded() const noexcept
+{
+    return deadline_active_ && Clock::now() >= deadline_;
+}
+
+void AStar::setMaxExpansions(std::size_t max_expansions) noexcept
+{
+    max_expansions_ = std::max<std::size_t>(1, max_expansions);
 }
 
 double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
@@ -81,22 +113,29 @@ double AStar::getEuclHeu(GridNodePtr node1, GridNodePtr node2)
     return (node2->index - node1->index).norm();
 }
 
-vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
+bool AStar::retrievePath(GridNodePtr current, vector<GridNodePtr> &path)
 {
-    vector<GridNodePtr> path;
+    path.clear();
     path.push_back(current);
 
     while (current->cameFrom != NULL)
     {
+        if (deadlineExceeded())
+        {
+            path.clear();
+            return false;
+        }
         current = current->cameFrom;
         path.push_back(current);
     }
 
-    return path;
+    return true;
 }
 
 bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d end_pt, Vector3i &start_idx, Vector3i &end_idx)
 {
+    if (deadlineExceeded())
+        return false;
     if (!Coord2Index(start_pt, start_idx) || !Coord2Index(end_pt, end_idx))
         return false;
 
@@ -112,6 +151,8 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
         //ROS_WARN("Start point is insdide an obstacle.");
         do
         {
+            if (deadlineExceeded())
+                return false;
             start_pt -= start_to_end * step_size_;
             if (!Coord2Index(start_pt, start_idx))
                 return false;
@@ -131,6 +172,8 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
         //ROS_WARN("End point is insdide an obstacle.");
         do
         {
+            if (deadlineExceeded())
+                return false;
             end_pt += start_to_end * step_size_;
             if (!Coord2Index(end_pt, end_idx))
                 return false;
@@ -150,6 +193,20 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
 ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_pt)
 {
     const auto time_1 = std::chrono::steady_clock::now();
+    gridPath_.clear();
+    if (deadlineExceeded())
+    {
+        RCLCPP_WARN(rclcpp::get_logger("path_searching"),
+                    "A-star rejected before dispatch: planning deadline exceeded");
+        return ASTAR_RET::DEADLINE_EXCEEDED;
+    }
+    if (!grid_map_ || GridNodeMap_ == nullptr ||
+        !std::isfinite(step_size) || step_size <= 0.0)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("path_searching"),
+                     "A-star is uninitialized or received an invalid step size");
+        return ASTAR_RET::INIT_ERR;
+    }
     ++rounds_;
 
     step_size_ = step_size;
@@ -159,6 +216,8 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
     Vector3i start_idx, end_idx;
     if (!ConvertToIndexAndAdjustStartEndPoints(start_pt, end_pt, start_idx, end_idx))
     {
+        if (deadlineExceeded())
+            return ASTAR_RET::DEADLINE_EXCEEDED;
         RCLCPP_ERROR(rclcpp::get_logger("path_searching"),
                      "Unable to handle the initial or end point, force return!");
         return ASTAR_RET::INIT_ERR;
@@ -210,6 +269,18 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
     int num_iter = 0;
     while (!openSet_.empty())
     {
+        if (deadlineExceeded())
+        {
+            RCLCPP_WARN(rclcpp::get_logger("path_searching"),
+                        "A-star stopped: shared planning deadline exceeded");
+            return ASTAR_RET::DEADLINE_EXCEEDED;
+        }
+        if (static_cast<std::size_t>(num_iter) >= max_expansions_)
+        {
+            RCLCPP_WARN(rclcpp::get_logger("path_searching"),
+                        "A-star stopped at hard expansion limit %zu", max_expansions_);
+            return ASTAR_RET::RESOURCE_LIMIT;
+        }
         num_iter++;
         current = openSet_.top();
         openSet_.pop();
@@ -223,7 +294,8 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
             // printf("\033[34mA star iter:%d, time:%.3f\033[0m\n",num_iter, (time_2 - time_1).toSec()*1000);
             // if((time_2 - time_1).toSec() > 0.1)
             //     ROS_WARN("Time consume in A star path finding is %f", (time_2 - time_1).toSec() );
-            gridPath_ = retrievePath(current);
+            if (!retrievePath(current, gridPath_))
+                return ASTAR_RET::DEADLINE_EXCEEDED;
             return ASTAR_RET::SUCCESS;
         }
         current->state = GridNode::CLOSEDSET; //move current node from open set to closed set.
@@ -231,6 +303,8 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
         for (int dx = -1; dx <= 1; dx++)
             for (int dy = -1; dy <= 1; dy++)
             {
+                if (deadlineExceeded())
+                    return ASTAR_RET::DEADLINE_EXCEEDED;
                 if (dx == 0 && dy == 0)
                     continue;
 
@@ -283,11 +357,11 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
                 }
             }
         const auto time_2 = std::chrono::steady_clock::now();
-        if (std::chrono::duration<double>(time_2 - time_1).count() > 0.2)
+        if (time_2 - time_1 >= local_time_limit_)
         {
             RCLCPP_WARN(rclcpp::get_logger("path_searching"),
-                        "Failed in A-star path search: 0.2 second time limit exceeded");
-            return ASTAR_RET::SEARCH_ERR;
+                        "A-star stopped at local 200ms resource limit");
+            return ASTAR_RET::RESOURCE_LIMIT;
         }
     }
 

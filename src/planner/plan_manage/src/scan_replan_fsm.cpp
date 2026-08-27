@@ -307,6 +307,10 @@ namespace scan_planner
   {
     std::vector<Eigen::Vector3d> wps = preset_waypoints_;
 
+    active_mission_id_.clear();
+    active_route_id_.clear();
+    advanceTaskRevision("preset waypoint task started");
+
     for (size_t i = 0; i < wps.size(); i++)
     {
       visualization_->displayGoalPoint(wps[i], Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, i);
@@ -378,6 +382,10 @@ namespace scan_planner
 
     if (success)
     {
+
+      active_mission_id_.clear();
+      active_route_id_.clear();
+      advanceTaskRevision("manual target accepted");
 
       /*** display ***/
       constexpr double step_size_t = 0.1;
@@ -746,10 +754,11 @@ namespace scan_planner
     startFollowRoute(*msg);
   }
 
-  bool SCANReplanFSM::startFollowRoute(const nav_msgs::msg::Path &path)
+  bool SCANReplanFSM::startFollowRoute(
+      const nav_msgs::msg::Path &path,
+      const std::string &mission_id,
+      const std::string &route_id)
   {
-    trigger_ = true;
-
     std::vector<Eigen::Vector3d> raw_waypoints;
     raw_waypoints.reserve(path.poses.size());
 
@@ -769,10 +778,20 @@ namespace scan_planner
       raw_waypoints.push_back(wp);
     }
 
+    // A syntactically valid new route supersedes the previous task even when
+    // geometry cleanup or global planning later fails. This guarantees that
+    // a candidate produced for the previous route can never become active.
+    advanceTaskRevision("reference route replaced");
+    active_mission_id_ = mission_id;
+    active_route_id_ = route_id;
+    trigger_ = true;
+
     std::vector<Eigen::Vector3d> waypoints;
     if (!prepareReferenceWaypoints(raw_waypoints, waypoints))
     {
       have_target_ = false;
+      active_mission_id_.clear();
+      active_route_id_.clear();
       return false;
     }
 
@@ -792,6 +811,8 @@ namespace scan_planner
     {
       reference_path_tracker_.clear();
       have_target_ = false;
+      active_mission_id_.clear();
+      active_route_id_.clear();
       RCLCPP_ERROR(
           node_->get_logger(),
           "Unable to initialize reference progress tracker: %s",
@@ -825,6 +846,8 @@ namespace scan_planner
     {
       reference_path_active_ = false;
       reference_path_tracker_.clear();
+      active_mission_id_.clear();
+      active_route_id_.clear();
       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory from reference path");
     }
     return success;
@@ -851,6 +874,9 @@ namespace scan_planner
   {
     if (navi_mode_ != NAVI_MODE::REFERENCE_PATH || !reference_path_active_)
       return;
+    if (follow_route_cancel_pending_)
+      return;
+    advanceTaskRevision("reference route canceled");
     follow_route_cancel_pending_ = true;
   }
 
@@ -947,6 +973,27 @@ namespace scan_planner
           msg->header.frame_id.c_str(), expected_odom_frame_.c_str());
       return;
     }
+    const rclcpp::Time receive_time = node_->now();
+    if (have_odom_ && receive_time < last_odom_receive_time_)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "ROS time moved backwards by %.6fs; invalidating task and active trajectory",
+          (last_odom_receive_time_ - receive_time).seconds());
+      advanceTaskRevision("ROS time moved backwards");
+      publishTrajectoryClear("ROS time moved backwards");
+      trigger_ = false;
+      have_target_ = false;
+      have_new_target_ = false;
+      active_waypoints_.clear();
+      reference_path_active_ = false;
+      reference_path_tracker_.clear();
+      follow_route_cancel_pending_ = false;
+      active_mission_id_.clear();
+      active_route_id_.clear();
+      preset_started_ = false;
+      exec_state_ = FSM_EXEC_STATE::INIT;
+    }
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;
@@ -985,7 +1032,7 @@ namespace scan_planner
     {
       reference_path_tracker_.update(odom_pos_);
     }
-    last_odom_receive_time_ = node_->now();
+    last_odom_receive_time_ = receive_time;
     odom_timeout_active_ = false;
     publishSelfInflationMarker();
     if (navi_mode_ == NAVI_MODE::REFERENCE_PATH && pending_reference_path_)
@@ -1017,6 +1064,7 @@ namespace scan_planner
       RCLCPP_ERROR(
           node_->get_logger(),
           "omni_tf_manager lost readiness; clearing trajectory and localization state");
+      advanceTaskRevision("omni_tf_manager not ready");
       publishTrajectoryClear("omni_tf_manager not ready");
     }
     tf_ready_ = false;
@@ -1028,6 +1076,8 @@ namespace scan_planner
     reference_path_active_ = false;
     reference_path_tracker_.clear();
     follow_route_cancel_pending_ = false;
+    active_mission_id_.clear();
+    active_route_id_.clear();
     preset_started_ = false;
     exec_state_ = FSM_EXEC_STATE::INIT;
   }
@@ -1321,6 +1371,7 @@ namespace scan_planner
             node_->get_logger(),
             "body_pose timed out (limit %.2fs); clearing target and trajectory",
             odom_timeout_);
+        advanceTaskRevision("body_pose timeout");
         publishTrajectoryClear("body_pose timeout");
       }
       odom_timeout_active_ = true;
@@ -1335,6 +1386,8 @@ namespace scan_planner
       reference_path_active_ = false;
       reference_path_tracker_.clear();
       follow_route_cancel_pending_ = false;
+      active_mission_id_.clear();
+      active_route_id_.clear();
       preset_started_ = false;
       exec_state_ = FSM_EXEC_STATE::INIT;
       return;
@@ -1489,6 +1542,9 @@ namespace scan_planner
             reference_path_tracker_.clear();
             have_target_ = false;
             last_reference_route_outcome_ = RouteOutcome::SUCCEEDED;
+            advanceTaskRevision("reference route completed");
+            active_mission_id_.clear();
+            active_route_id_.clear();
             changeFSMExecState(WAIT_TARGET, "REFERENCE_DONE");
           }
           else
@@ -1520,6 +1576,10 @@ namespace scan_planner
         }
 
         have_target_ = false;
+
+        advanceTaskRevision("navigation task completed");
+        active_mission_id_.clear();
+        active_route_id_.clear();
 
         changeFSMExecState(WAIT_TARGET, "FSM");
         return;
@@ -1588,6 +1648,7 @@ namespace scan_planner
       if (reference_path_active_ &&
           last_reference_route_outcome_ == RouteOutcome::NONE)
         last_reference_route_outcome_ = RouteOutcome::ABORTED;
+      advanceTaskRevision("replanning failure limit reached");
       changeFSMExecState(EMERGENCY_STOP, "finishProcess");
     }
   }
@@ -1829,10 +1890,53 @@ namespace scan_planner
     }
   }
 
+  void SCANReplanFSM::advanceTaskRevision(const char *reason)
+  {
+    const std::uint64_t revision =
+        task_revision_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    RCLCPP_DEBUG(
+        node_->get_logger(),
+        "Planning task revision advanced to %lu: %s",
+        static_cast<unsigned long>(revision),
+        reason == nullptr ? "unspecified" : reason);
+  }
+
+  PlanningInputRevision SCANReplanFSM::currentPlanningRevisions() const noexcept
+  {
+    PlanningInputRevision revisions;
+    revisions.task = task_revision_.load(std::memory_order_acquire);
+    if (planner_manager_)
+    {
+      revisions.config = planner_manager_->planningConfigRevision();
+      if (planner_manager_->grid_map_)
+        revisions.map = planner_manager_->grid_map_->mapRevision();
+    }
+    return revisions;
+  }
+
   bool SCANReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
   {
 
+    PlanningContext context(
+        currentPlanningRevisions(),
+        PlanDeadline(planner_manager_->planningBudget()),
+        active_mission_id_,
+        active_route_id_);
+
     getLocalTarget();
+
+    const auto commit_authority = [this](
+        const PlanningInputRevision &planned_revisions,
+        LocalTrajData &&candidate) {
+      // The node currently runs on a SingleThreadedExecutor, so reading the
+      // live generations and replacing local_data_ form one serialized commit
+      // boundary. A future worker-thread planner must protect this exact block
+      // with the FSM owner lock.
+      return planner_manager_->commitLocalTrajectory(
+          planned_revisions,
+          currentPlanningRevisions(),
+          std::move(candidate));
+    };
 
     bool plan_success =
         planner_manager_->reboundReplan(
@@ -1843,7 +1947,9 @@ namespace scan_planner
             local_target_vel_,
             (have_new_target_ || flag_use_poly_init),
             flag_randomPolyTraj,
-            local_reference_seed_);
+            local_reference_seed_,
+            std::move(context),
+            commit_authority);
     have_new_target_ = false;
 
     cout << "final_plan_success=" << plan_success << endl;

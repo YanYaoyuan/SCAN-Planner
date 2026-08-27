@@ -110,25 +110,49 @@ jobs:
           cross_root="${S100_WORK_ROOT}/cc_ws/tros_ws"
           echo "S100_CROSS_ROOT=${cross_root}" >> "${GITHUB_ENV}"
 
-      - name: Package core overlay
+      - name: Package deployable runtime
         shell: bash
         run: |
           set -euo pipefail
 
-          overlay="${S100_CROSS_ROOT}/install"
-          test -x "${overlay}/lib/scan_planner/scan_planner_node"
-          test -x "${overlay}/lib/scan_planner/closed_loop_controller"
-          test -x "${overlay}/lib/scan_planner/global_path_publisher"
+          runtime_root="${S100_CROSS_ROOT}/runtime"
+          test -x "${runtime_root}/bin/scan_planner_node"
+          test -x "${runtime_root}/bin/closed_loop_controller"
+          test -x "${runtime_root}/bin/global_path_publisher"
+          test -x "${runtime_root}/bin/run_product_planner.sh"
+          test -f "${runtime_root}/config/scan_planner/planner.yaml"
+          test -s "${runtime_root}/lib/DEPENDENCIES.txt"
+          for interface_package in omni_robot_interfaces scan_planner_msgs; do
+            if ! find "${runtime_root}/local" "${runtime_root}/lib" -type f \
+                -path "*/python3.10/*-packages/${interface_package}/*.so" \
+                -print -quit 2>/dev/null | grep -q .; then
+              echo "missing Python typesupport for ${interface_package}" >&2
+              exit 1
+            fi
+          done
+          if find "${runtime_root}/lib" -maxdepth 1 -type f \
+              -name '*.a' -print -quit | grep -q .; then
+            echo 'static archives must not be shipped in the runtime artifact' >&2
+            exit 1
+          fi
 
           for excluded_path in \
-            "${overlay}/lib/scan_planner/open_loop_controller" \
-            "${overlay}/lib/scan_planner/go2_kinematic_sim" \
-            "${overlay}/lib/scan_planner/go2_gait_publisher" \
-            "${overlay}/share/go2_description" \
-            "${overlay}/share/local_sensing_node" \
-            "${overlay}/share/map_generator" \
-            "${overlay}/share/mockamap" \
-            "${overlay}/share/zsibot_cmd_bridge"; do
+            "${runtime_root}/bin/open_loop_controller" \
+            "${runtime_root}/bin/go2_kinematic_sim" \
+            "${runtime_root}/bin/go2_gait_publisher" \
+            "${runtime_root}/lib/scan_planner/open_loop_controller" \
+            "${runtime_root}/lib/scan_planner/go2_kinematic_sim" \
+            "${runtime_root}/lib/scan_planner/go2_gait_publisher" \
+            "${runtime_root}/lib/scan_planner/keypoint_recorder.py" \
+            "${runtime_root}/share/go2_description" \
+            "${runtime_root}/share/local_sensing_node" \
+            "${runtime_root}/share/map_generator" \
+            "${runtime_root}/share/mockamap" \
+            "${runtime_root}/share/zsibot_cmd_bridge" \
+            "${runtime_root}/share/scan_planner/config/simulator.yaml" \
+            "${runtime_root}/share/scan_planner/launch/simulator.launch.py" \
+            "${runtime_root}/share/plan_env/cmake" \
+            "${runtime_root}/share/ament_index/resource_index/parent_prefix_path"; do
             test ! -e "${excluded_path}"
           done
 
@@ -144,7 +168,7 @@ jobs:
           version="${version//\//-}"
           name="scan-planner-rdk-s100-aarch64-${version}-${GITHUB_SHA::12}"
           mkdir -p "dist/${name}"
-          cp -a "${overlay}/." "dist/${name}/"
+          cp -a "${runtime_root}/." "dist/${name}/"
 
           {
             echo "project=SCAN-Planner"
@@ -156,19 +180,17 @@ jobs:
             echo "robot_dev_config_sha=${ROBOT_DEV_CONFIG_REF}"
             echo "sysroot_sha=${S100_SYSROOT_REF}"
             echo "packages=omni_robot_interfaces scan_planner_msgs plan_env path_searching bspline_opt traj_utils scan_planner"
+            echo "runtime_dependencies=lib/DEPENDENCIES.txt"
           } > "dist/${name}/MANIFEST.txt"
 
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
-          sha256sum "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
-          ls -lh "dist/${name}.tar.gz" "dist/${name}.tar.gz.sha256"
+          ls -lh "dist/${name}.tar.gz"
 
       - name: Upload S100 artifact
         uses: actions/upload-artifact@v7.0.1
         with:
           name: scan-planner-rdk-s100-aarch64
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
+          path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: 3
 

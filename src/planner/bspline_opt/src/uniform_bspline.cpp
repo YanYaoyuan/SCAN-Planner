@@ -50,11 +50,13 @@ namespace scan_planner
 
   bool UniformBspline::getTimeSpan(double &um, double &um_p)
   {
-    if (p_ > u_.rows() || m_ - p_ > u_.rows())
+    const int upper_index = m_ - p_;
+    if (p_ < 0 || upper_index < 0 || p_ >= u_.rows() ||
+        upper_index >= u_.rows())
       return false;
 
     um = u_(p_);
-    um_p = u_(m_ - p_);
+    um_p = u_(upper_index);
 
     return true;
   }
@@ -328,8 +330,13 @@ namespace scan_planner
   void UniformBspline::getMeanAndMaxVel(double &mean_v, double &max_v)
   {
     UniformBspline vel = getDerivative();
-    double tm, tmp;
-    vel.getTimeSpan(tm, tmp);
+    double tm = 0.0, tmp = 0.0;
+    if (!vel.getTimeSpan(tm, tmp) || tmp < tm)
+    {
+      mean_v = 0.0;
+      max_v = 0.0;
+      return;
+    }
 
     double max_vel = -1.0, mean_vel = 0.0;
     int num = 0;
@@ -354,8 +361,13 @@ namespace scan_planner
   void UniformBspline::getMeanAndMaxAcc(double &mean_a, double &max_a)
   {
     UniformBspline acc = getDerivative().getDerivative();
-    double tm, tmp;
-    acc.getTimeSpan(tm, tmp);
+    double tm = 0.0, tmp = 0.0;
+    if (!acc.getTimeSpan(tm, tmp) || tmp < tm)
+    {
+      mean_a = 0.0;
+      max_a = 0.0;
+      return;
+    }
 
     double max_acc = -1.0, mean_acc = 0.0;
     int num = 0;

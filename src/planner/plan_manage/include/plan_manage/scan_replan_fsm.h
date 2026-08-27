@@ -7,6 +7,8 @@
 
 #include <Eigen/Eigen>
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <iostream>
 #include <nav_msgs/msg/odometry.hpp>
@@ -150,6 +152,9 @@ namespace scan_planner
     bool follow_route_cancel_pending_{false};
     double follow_route_speed_scale_{1.0};
     RouteOutcome last_reference_route_outcome_{RouteOutcome::NONE};
+    std::atomic<std::uint64_t> task_revision_{0};
+    std::string active_mission_id_;
+    std::string active_route_id_;
 
     bool flag_escape_emergency_;
 
@@ -171,6 +176,10 @@ namespace scan_planner
 
     /** @brief Invokes local rebound planning. @param flag_use_poly_init Force fresh initialization. @param flag_randomPolyTraj Enable randomized fallback. @return True on success. */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
+    /** @brief Advances the authoritative task generation after replacement or invalidation. */
+    void advanceTaskRevision(const char *reason);
+    /** @brief Reads the authoritative revisions used by the commit boundary. */
+    PlanningInputRevision currentPlanningRevisions() const noexcept;
     /** @brief Publishes a stationary emergency trajectory. @param stop_pos Stop position. @return True on success. */
     bool callEmergencyStop(Eigen::Vector3d stop_pos);                          // front-end and back-end method
     /** @brief Replans from current odometry and trajectory derivatives. @return True on success. */
@@ -289,8 +298,13 @@ namespace scan_planner
 
     /** @brief Accepts a reference route through the mode-3 pipeline.
      *  @param path Route waypoints in the goal frame.
+     *  @param mission_id Optional action mission identity for diagnostics.
+     *  @param route_id Optional action route identity for diagnostics.
      *  @return True when the route became active. */
-    bool startFollowRoute(const nav_msgs::msg::Path &path);
+    bool startFollowRoute(
+        const nav_msgs::msg::Path &path,
+        const std::string &mission_id = {},
+        const std::string &route_id = {});
 
     /** @brief Requests a controlled stop for the active route (decelerate
      *  through the normal pipeline; NOT an emergency stop). No-op when no

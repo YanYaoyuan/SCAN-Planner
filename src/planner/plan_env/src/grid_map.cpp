@@ -228,6 +228,7 @@ void GridMap::initMap(rclcpp::Node *node)
   md_.max_fuse_time_ = 0.0;
   md_.local_bound_min_ = mp_.map_bound_min_idx_;
   md_.local_bound_max_ = mp_.map_bound_max_idx_;
+  map_revision_.store(1, std::memory_order_release);
 
   // rand_noise_ = uniform_real_distribution<double>(-0.2, 0.2);
   // rand_noise2_ = normal_distribution<double>(0, 0.2);
@@ -276,6 +277,7 @@ void GridMap::resetAllMapData()
   std::fill(md_.flag_traverse_.begin(), md_.flag_traverse_.end(), -1);
   std::queue<Eigen::Vector3i> empty;
   std::swap(md_.cache_voxel_, empty);
+  advanceMapRevision();
 }
 
 void GridMap::hashIdToGlobalIndex(int addr, Eigen::Vector3i& id_g) const
@@ -458,6 +460,7 @@ void GridMap::updateSlidingMap(const Eigen::Vector3d& center)
   updateMapBoundaryFromIndex();
   boundIndex(md_.local_bound_min_);
   boundIndex(md_.local_bound_max_);
+  advanceMapRevision();
 }
 
 void GridMap::resetBuffer()
@@ -484,6 +487,7 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
         resetCellByAddress(toAddress(x, y, z));
       }
     }
+  advanceMapRevision();
 }
 
 int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
@@ -808,6 +812,7 @@ void GridMap::updateOccupancyCallback()
 
   md_.occ_need_update_ = false;
   md_.use_cloud_update_ = false;
+  advanceMapRevision();
 }
 
 void GridMap::depthPoseCallback(const sensor_msgs::msg::Image::ConstSharedPtr &img,
@@ -1263,6 +1268,16 @@ void GridMap::publishUnknown()
 bool GridMap::odomValid() { return md_.has_ray_pose_; }
 
 bool GridMap::hasDepthObservation() { return md_.has_first_depth_; }
+
+std::uint64_t GridMap::mapRevision() const noexcept
+{
+  return map_revision_.load(std::memory_order_acquire);
+}
+
+void GridMap::advanceMapRevision() noexcept
+{
+  map_revision_.fetch_add(1, std::memory_order_acq_rel);
+}
 
 Eigen::Vector3d GridMap::getOrigin() { return mp_.map_origin_; }
 

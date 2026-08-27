@@ -5,6 +5,8 @@
 #ifndef _DYN_A_STAR_H_
 #define _DYN_A_STAR_H_
 
+#include <chrono>
+#include <cstddef>
 #include <iostream>
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Eigen>
@@ -20,7 +22,9 @@ enum ASTAR_RET
 {
 	SUCCESS,
 	INIT_ERR,
-	SEARCH_ERR
+	SEARCH_ERR,
+	DEADLINE_EXCEEDED,
+	RESOURCE_LIMIT
 };
 
 /** @brief One reusable node in the A* voxel pool. */
@@ -86,20 +90,26 @@ private:
 	/** @brief Queries inflated occupancy. @param pos Coordinate. @param yaw Robot heading in radians. @return Occupancy state. */
 	inline int checkOccupancy(const Eigen::Vector3d &pos, const double yaw) { return grid_map_->getInflateOccupancy(pos, yaw); }
 
-	/** @brief Reconstructs a path from the goal node. @param current Goal node. @return Ordered node path. */
-	std::vector<GridNodePtr> retrievePath(GridNodePtr current);
+	/** @brief Reconstructs a path from the goal node under the shared deadline. */
+	bool retrievePath(GridNodePtr current, std::vector<GridNodePtr> &path);
 
 	double step_size_, inv_step_size_;
 	Eigen::Vector3d center_;
-	Eigen::Vector3i CENTER_IDX_, POOL_SIZE_;
+	Eigen::Vector3i CENTER_IDX_{Eigen::Vector3i::Zero()};
+	Eigen::Vector3i POOL_SIZE_{Eigen::Vector3i::Zero()};
 	const double tie_breaker_ = 1.0 + 1.0 / 10000;
 
 	std::vector<GridNodePtr> gridPath_;
 
-	GridNodePtr ***GridNodeMap_;
+	GridNodePtr ***GridNodeMap_{nullptr};
 	std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
 
 	int rounds_{0};
+	using Clock = std::chrono::steady_clock;
+	bool deadline_active_{false};
+	Clock::time_point deadline_{Clock::time_point::max()};
+	std::size_t max_expansions_{100000};
+	std::chrono::milliseconds local_time_limit_{200};
 
 public:
 	typedef std::shared_ptr<AStar> Ptr;
@@ -111,6 +121,15 @@ public:
 
 	/** @brief Allocates the node pool and binds an occupancy map. @param occ_map Occupancy map. @param pool_size Number of nodes along each axis. */
 	void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
+
+	/** @brief Sets the absolute deadline shared with the owning planning attempt. */
+	void setDeadline(Clock::time_point deadline) noexcept;
+	/** @brief Disables the external deadline for standalone searches. */
+	void clearDeadline() noexcept;
+	/** @brief Returns true at or after the configured external deadline. */
+	bool deadlineExceeded() const noexcept;
+	/** @brief Sets the hard node-expansion limit; zero is clamped to one. */
+	void setMaxExpansions(std::size_t max_expansions) noexcept;
 
 	/** @brief Searches between two coordinates. @param step_size Search-grid resolution. @param start_pt Start coordinate. @param end_pt Goal coordinate. @return Search status. */
 	ASTAR_RET AstarSearch(const double step_size, Eigen::Vector3d start_pt, Eigen::Vector3d end_pt);

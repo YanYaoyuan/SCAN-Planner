@@ -7,7 +7,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace scan_planner
 {
@@ -65,6 +68,10 @@ namespace scan_planner
       if (!node->has_parameter(name)) node->declare_parameter<double>(name, default_value);
       return node->get_parameter(name).as_double();
     };
+    const auto get_int = [node](const std::string &name, std::int64_t default_value) {
+      if (!node->has_parameter(name)) node->declare_parameter<std::int64_t>(name, default_value);
+      return node->get_parameter(name).as_int();
+    };
     pp_.max_vel_ = get_double("manager.max_vel", -1.0);
     pp_.max_acc_ = get_double("manager.max_acc", -1.0);
     pp_.max_jerk_ = get_double("manager.max_jerk", -1.0);
@@ -73,6 +80,53 @@ namespace scan_planner
     pp_.feasibility_tolerance_ = get_double("manager.feasibility_tolerance", 0.0);
     pp_.ctrl_pt_dist = get_double("manager.control_points_distance", -1.0);
     pp_.planning_horizon_ = get_double("manager.planning_horizon", 5.0);
+    pp_.planning_deadline_sec_ =
+        get_double("manager.planning_deadline_sec", 0.5);
+    pp_.validation_max_time_step_sec_ =
+        get_double("manager.validation_max_time_step_sec", 0.01);
+    const std::int64_t validation_max_samples =
+        get_int("manager.validation_max_samples", 4096);
+    if (!std::isfinite(pp_.max_vel_) || pp_.max_vel_ <= 0.0 ||
+        !std::isfinite(pp_.max_acc_) || pp_.max_acc_ <= 0.0 ||
+        !std::isfinite(pp_.max_jerk_) || pp_.max_jerk_ <= 0.0)
+    {
+      throw std::invalid_argument(
+          "manager max_vel, max_acc, and max_jerk must be finite and positive");
+    }
+    if (!std::isfinite(pp_.vel_tolerance_) || pp_.vel_tolerance_ < 0.0 ||
+        !std::isfinite(pp_.acc_tolerance_) || pp_.acc_tolerance_ < 0.0 ||
+        !std::isfinite(pp_.feasibility_tolerance_) ||
+        pp_.feasibility_tolerance_ < 0.0)
+    {
+      throw std::invalid_argument(
+          "trajectory feasibility tolerances must be finite and non-negative");
+    }
+    if (!std::isfinite(pp_.ctrl_pt_dist) || pp_.ctrl_pt_dist <= 0.0 ||
+        !std::isfinite(pp_.planning_horizon_) || pp_.planning_horizon_ <= 0.0)
+    {
+      throw std::invalid_argument(
+          "manager control_points_distance and planning_horizon must be finite and positive");
+    }
+    if (!std::isfinite(pp_.planning_deadline_sec_) ||
+        pp_.planning_deadline_sec_ < 1.0e-3)
+    {
+      throw std::invalid_argument(
+          "manager.planning_deadline_sec must be finite and at least 0.001s");
+    }
+    if (!std::isfinite(pp_.validation_max_time_step_sec_) ||
+        pp_.validation_max_time_step_sec_ < 1.0e-4 ||
+        pp_.validation_max_time_step_sec_ > 0.1)
+    {
+      throw std::invalid_argument(
+          "manager.validation_max_time_step_sec must be in [0.0001, 0.1]s");
+    }
+    if (validation_max_samples < 2 || validation_max_samples > 1000000)
+    {
+      throw std::invalid_argument(
+          "manager.validation_max_samples must be in [2, 1000000]");
+    }
+    pp_.validation_max_samples_ =
+        static_cast<std::size_t>(validation_max_samples);
 
     local_data_.traj_id_ = 0;
     grid_map_.reset(new GridMap);
@@ -95,8 +149,38 @@ namespace scan_planner
                                         Eigen::Vector3d start_acc, Eigen::Vector3d local_target_pt,
                                         Eigen::Vector3d local_target_vel, bool flag_polyInit,
                                         bool flag_randomPolyTraj,
-                                        const std::vector<Eigen::Vector3d> &reference_seed)
+                                        const std::vector<Eigen::Vector3d> &reference_seed,
+                                        PlanningContext context,
+                                        const LocalTrajectoryCommitAuthority &commit_authority)
   {
+
+    const auto reject_if_expired = [this, &context](const char *stage) {
+      if (!context.deadline().expired())
+        return false;
+
+      const double elapsed_sec = std::chrono::duration<double>(
+          PlanDeadline::Clock::now() - context.deadline().startTime()).count();
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Planning deadline exceeded after %s (%.3fs, budget %.3fs); "
+          "rejecting candidate [mission='%s', route='%s', task=%lu, map=%lu, config=%lu]",
+          stage,
+          elapsed_sec,
+          std::chrono::duration<double>(context.deadline().budget()).count(),
+          context.missionId().c_str(),
+          context.routeId().c_str(),
+          static_cast<unsigned long>(context.revisions().task),
+          static_cast<unsigned long>(context.revisions().map),
+          static_cast<unsigned long>(context.revisions().config));
+      continuous_failures_count_++;
+      return true;
+    };
+
+    if (reject_if_expired("dispatch"))
+      return false;
+
+    bspline_optimizer_rebound_->setDeadline(
+        context.deadline().expirationTime());
 
     static int count = 0;
     std::cout << endl
@@ -367,6 +451,17 @@ namespace scan_planner
     vector<vector<Eigen::Vector3d>> a_star_paths;
     a_star_paths = bspline_optimizer_rebound_->initControlPoints(ctrl_pts, true);
 
+    if (reject_if_expired("initialization"))
+      return false;
+    if (!bspline_optimizer_rebound_->initializationSucceeded())
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Local planning initialization failed or exceeded a hard resource limit");
+      continuous_failures_count_++;
+      return false;
+    }
+
     t_init = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
     static int vis_id = 0;
@@ -378,6 +473,8 @@ namespace scan_planner
     /*** STEP 2: OPTIMIZE ***/
     bool flag_step_1_success = bspline_optimizer_rebound_->BsplineOptimizeTrajRebound(ctrl_pts, ts);
     cout << "first_optimize_step_success=" << flag_step_1_success << endl;
+    if (reject_if_expired("rebound optimization"))
+      return false;
     if (!flag_step_1_success)
     {
       // visualization_->displayOptimalList( ctrl_pts, vis_id );
@@ -405,17 +502,50 @@ namespace scan_planner
         pos = UniformBspline(optimal_control_points, 3, ts);
     }
 
-    if (!flag_step_2_success || !checkDynamicFeasibility(pos))
+    if (reject_if_expired("trajectory refinement"))
+      return false;
+    if (!flag_step_2_success)
     {
-      printf("\033[34mThis refined trajectory is unsafe or dynamically infeasible. Skip publishing it.\n\033[0m");
       continuous_failures_count_++;
       return false;
     }
 
+    const TrajectoryAcceptanceResult validation =
+        validateLocalTrajectory(pos, context.deadline());
+    if (!validation.accepted())
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Final trajectory validation rejected candidate: %s "
+          "(sample=%zu/%zu, t=%.3f, observed=%.3f, limit=%.3f, occupancy=%d)",
+          trajectoryAcceptanceStatusName(validation.status),
+          validation.sample_index,
+          validation.sample_count,
+          validation.trajectory_time,
+          validation.observed_value,
+          validation.limit_value,
+          validation.occupancy);
+      continuous_failures_count_++;
+      return false;
+    }
+    if (reject_if_expired("final trajectory validation"))
+      return false;
+
     t_refine = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
 
-    // save planned results
-    updateTrajInfo(pos, node_->now());
+    CandidatePlan<LocalTrajData> candidate(
+        std::move(context), buildLocalTrajData(pos, node_->now()));
+    const CandidateCommitResult commit_result =
+        candidate.tryCommit(true, commit_authority);
+    if (commit_result != CandidateCommitResult::kCommitted)
+    {
+      RCLCPP_ERROR(
+          node_->get_logger(),
+          "Rejecting local trajectory at commit boundary: %s",
+          candidateCommitResultName(commit_result));
+      continuous_failures_count_++;
+      return false;
+    }
 
     cout << "total time:\033[42m" << (t_init + t_opt + t_refine)
          << "\033[0m,optimize:" << (t_init + t_opt) << ",refine:" << t_refine << endl;
@@ -607,49 +737,79 @@ namespace scan_planner
 
   void SCANPlannerManager::updateTrajInfo(const UniformBspline &position_traj, const rclcpp::Time time_now)
   {
-    local_data_.start_time_ = time_now;
-    local_data_.position_traj_ = position_traj;
-    local_data_.velocity_traj_ = local_data_.position_traj_.getDerivative();
-    local_data_.acceleration_traj_ = local_data_.velocity_traj_.getDerivative();
-    local_data_.start_pos_ = local_data_.position_traj_.evaluateDeBoorT(0.0);
-    local_data_.duration_ = local_data_.position_traj_.getTimeSum();
-    local_data_.progress_time_ = 0.0;
-    local_data_.progress_arc_length_ = 0.0;
-    local_data_.traj_id_ += 1;
+    LocalTrajData candidate = buildLocalTrajData(position_traj, time_now);
+    candidate.traj_id_ =
+        local_data_.traj_id_ >= std::numeric_limits<int>::max()
+            ? 1
+            : local_data_.traj_id_ + 1;
+    local_data_ = std::move(candidate);
   }
 
-  bool SCANPlannerManager::checkDynamicFeasibility(UniformBspline position_traj)
+  PlanDeadline::Duration SCANPlannerManager::planningBudget() const noexcept
   {
-    UniformBspline vel_traj = position_traj.getDerivative();
-    UniformBspline acc_traj = vel_traj.getDerivative();
-    const double duration = position_traj.getTimeSum();
-    const double sample_dt = std::max(0.01, std::min(0.05, duration / 50.0));
-    const double vel_limit = pp_.max_vel_ + pp_.vel_tolerance_;
-    const double acc_limit = pp_.max_acc_ + pp_.acc_tolerance_;
+    return std::chrono::duration_cast<PlanDeadline::Duration>(
+        std::chrono::duration<double>(pp_.planning_deadline_sec_));
+  }
 
-    for (double t = 0.0; t < duration + 1e-6; t += sample_dt)
+  std::uint64_t SCANPlannerManager::planningConfigRevision() const noexcept
+  {
+    return config_revision_;
+  }
+
+  CandidateCommitResult SCANPlannerManager::commitLocalTrajectory(
+      const PlanningInputRevision &planned_revisions,
+      const PlanningInputRevision &current_revisions,
+      LocalTrajData &&candidate)
+  {
+    if (const auto mismatch =
+            candidateRevisionMismatch(planned_revisions, current_revisions))
     {
-      const double tc = std::min(t, duration);
-      Eigen::Vector3d vel = vel_traj.evaluateDeBoorT(tc);
-      if (vel.norm() > vel_limit)
-      {
-        RCLCPP_WARN(node_->get_logger(),
-                    "Dynamic feasibility failed: velocity at t=%.3f is %.3f > %.3f",
-                    tc, vel.norm(), vel_limit);
-        return false;
-      }
-
-      Eigen::Vector3d acc = acc_traj.evaluateDeBoorT(tc);
-      if (acc.norm() > acc_limit)
-      {
-        RCLCPP_WARN(node_->get_logger(),
-                    "Dynamic feasibility failed: acceleration at t=%.3f is %.3f > %.3f",
-                    tc, acc.norm(), acc_limit);
-        return false;
-      }
+      return *mismatch;
     }
 
-    return true;
+    candidate.traj_id_ =
+        local_data_.traj_id_ >= std::numeric_limits<int>::max()
+            ? 1
+            : local_data_.traj_id_ + 1;
+    local_data_ = std::move(candidate);
+    return CandidateCommitResult::kCommitted;
+  }
+
+  LocalTrajData SCANPlannerManager::buildLocalTrajData(
+      const UniformBspline &position_traj,
+      const rclcpp::Time &time_now) const
+  {
+    LocalTrajData candidate;
+    candidate.start_time_ = time_now;
+    candidate.position_traj_ = position_traj;
+    candidate.velocity_traj_ = candidate.position_traj_.getDerivative();
+    candidate.acceleration_traj_ = candidate.velocity_traj_.getDerivative();
+    candidate.start_pos_ = candidate.position_traj_.evaluateDeBoorT(0.0);
+    candidate.duration_ = candidate.position_traj_.getTimeSum();
+    candidate.progress_time_ = 0.0;
+    candidate.progress_arc_length_ = 0.0;
+    return candidate;
+  }
+
+  TrajectoryAcceptanceResult SCANPlannerManager::validateLocalTrajectory(
+      UniformBspline position_traj,
+      const PlanDeadline &deadline) const
+  {
+    TrajectoryAcceptanceConfig config;
+    config.max_velocity = pp_.max_vel_;
+    config.max_acceleration = pp_.max_acc_;
+    config.velocity_tolerance = pp_.vel_tolerance_;
+    config.acceleration_tolerance = pp_.acc_tolerance_;
+    config.max_spatial_sample_step = grid_map_->getResolution() * 0.5;
+    config.max_temporal_sample_step = pp_.validation_max_time_step_sec_;
+    config.max_samples = pp_.validation_max_samples_;
+
+    return TrajectoryAcceptanceValidator(config).validate(
+        std::move(position_traj),
+        [this](const Eigen::Vector3d &position, double yaw) {
+          return grid_map_->getInflateOccupancy(position, yaw);
+        },
+        [&deadline]() { return deadline.expired(); });
   }
 
   void SCANPlannerManager::reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio,

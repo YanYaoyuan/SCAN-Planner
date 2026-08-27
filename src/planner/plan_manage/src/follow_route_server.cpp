@@ -110,7 +110,7 @@ void FollowRouteServer::handleAccepted(
   const double speed_scale = static_cast<double>(goal.speed_scale);
   fsm_->setFollowRouteSpeedScale(speed_scale == 0.0 ? 1.0 : speed_scale);
 
-  if (!fsm_->startFollowRoute(goal.path))
+  if (!fsm_->startFollowRoute(goal.path, goal.mission_id, goal.route_id))
   {
     // The goal was accepted, but the route could not be accepted (invalid
     // geometry, or global trajectory planning failed). The action protocol

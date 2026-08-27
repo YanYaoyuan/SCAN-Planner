@@ -68,6 +68,24 @@ set(scan_planner_dependencies
   path_searching plan_env rclcpp rclcpp_action scan_planner_msgs sensor_msgs std_msgs
   tf2 tf2_geometry_msgs tf2_ros traj_utils visualization_msgs)
 
+add_library(trajectory_acceptance_validator STATIC
+  src/trajectory_acceptance_validator.cpp)
+target_include_directories(trajectory_acceptance_validator PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(trajectory_acceptance_validator bspline_opt)
+target_link_libraries(trajectory_acceptance_validator Eigen3::Eigen)
+
+add_library(reference_route STATIC
+  src/local_route_progress_map.cpp
+  src/merge_reference_builder.cpp
+  src/reference_route.cpp
+  src/route_progress_tracker.cpp)
+target_include_directories(reference_route PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(reference_route Eigen3::Eigen)
+
 add_executable(scan_planner_node
   src/scan_planner_node.cpp
   src/scan_replan_fsm.cpp
@@ -75,7 +93,9 @@ add_executable(scan_planner_node
   src/planner_manager.cpp)
 target_include_directories(scan_planner_node PRIVATE include)
 ament_target_dependencies(scan_planner_node ${scan_planner_dependencies})
-target_link_libraries(scan_planner_node Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
+target_link_libraries(scan_planner_node
+  reference_route trajectory_acceptance_validator
+  Eigen3::Eigen ${SCAN_PLANNER_NUMERIC_LIBS})
 
 set(scan_planner_runtime_targets
   scan_planner_node
@@ -106,6 +126,12 @@ endforeach()
 
 install(TARGETS ${scan_planner_runtime_targets}
   DESTINATION lib/${PROJECT_NAME})
+install(TARGETS reference_route trajectory_acceptance_validator
+  EXPORT export_scan_planner_algorithms
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include)
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY launch config DESTINATION share/${PROJECT_NAME} OPTIONAL)
 install(FILES launch/default.rviz DESTINATION share/${PROJECT_NAME}/rviz OPTIONAL)
@@ -119,7 +145,23 @@ if(BUILD_TESTING)
   ament_add_gtest(test_reference_path_tracker
     test/test_reference_path_tracker.cpp)
   target_include_directories(test_reference_path_tracker PRIVATE include)
-  target_link_libraries(test_reference_path_tracker Eigen3::Eigen)
+  target_link_libraries(test_reference_path_tracker reference_route Eigen3::Eigen)
+  ament_add_gtest(test_reference_route
+    test/test_reference_route.cpp)
+  target_include_directories(test_reference_route PRIVATE include)
+  target_link_libraries(test_reference_route reference_route Eigen3::Eigen)
+  ament_add_gtest(test_route_progress_tracker
+    test/test_route_progress_tracker.cpp)
+  target_include_directories(test_route_progress_tracker PRIVATE include)
+  target_link_libraries(test_route_progress_tracker reference_route Eigen3::Eigen)
+  ament_add_gtest(test_local_route_progress_map
+    test/test_local_route_progress_map.cpp)
+  target_include_directories(test_local_route_progress_map PRIVATE include)
+  target_link_libraries(test_local_route_progress_map reference_route Eigen3::Eigen)
+  ament_add_gtest(test_merge_reference_builder
+    test/test_merge_reference_builder.cpp)
+  target_include_directories(test_merge_reference_builder PRIVATE include)
+  target_link_libraries(test_merge_reference_builder reference_route Eigen3::Eigen)
   ament_add_gtest(test_yaw_command_filter
     test/test_yaw_command_filter.cpp)
   target_include_directories(test_yaw_command_filter PRIVATE include)
@@ -146,6 +188,15 @@ if(BUILD_TESTING)
     test/test_planner_heartbeat_gate.cpp)
   target_include_directories(test_planner_heartbeat_gate PRIVATE include)
   ament_target_dependencies(test_planner_heartbeat_gate builtin_interfaces)
+  ament_add_gtest(test_planning_safety_foundation
+    test/test_planning_safety_foundation.cpp)
+  target_include_directories(test_planning_safety_foundation PRIVATE include)
+  ament_add_gtest(test_trajectory_acceptance_validator
+    test/test_trajectory_acceptance_validator.cpp)
+  target_include_directories(test_trajectory_acceptance_validator PRIVATE include)
+  ament_target_dependencies(test_trajectory_acceptance_validator bspline_opt)
+  target_link_libraries(test_trajectory_acceptance_validator
+    trajectory_acceptance_validator Eigen3::Eigen)
   add_launch_test(test/test_planner_startup.py TIMEOUT 30)
   add_launch_test(test/test_waypoint_parameters.py TIMEOUT 30)
   ament_add_pytest_test(test_legacy_zsibot_opt_in
@@ -158,5 +209,8 @@ if(BUILD_TESTING)
     test/test_s100_build_contract.py
     TIMEOUT 30)
 endif()
+
+ament_export_targets(export_scan_planner_algorithms HAS_LIBRARY_TARGET)
+ament_export_dependencies(bspline_opt Eigen3)
 
 ament_package()
