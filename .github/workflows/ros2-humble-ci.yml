@@ -55,6 +55,7 @@ jobs:
             cmake \
             git \
             libeigen3-dev \
+            openssh-client \
             python3-colcon-common-extensions \
             python3-rosdep \
             rsync \

@@ -108,6 +108,7 @@ class S100BuildContractTest(unittest.TestCase):
         self.assertNotIn("dist/*.sha256", workflow)
 
         x86_workflow = read(".github/workflows/ros2-humble-ci.yml")
+        self.assertIn("openssh-client", x86_workflow)
         self.assertIn("SCAN_PLANNER_BUILD_OPEN_LOOP_CONTROLLER=OFF", x86_workflow)
         self.assertIn("SCAN_PLANNER_BUILD_SIMULATION_NODES=OFF", x86_workflow)
         self.assertIn(
