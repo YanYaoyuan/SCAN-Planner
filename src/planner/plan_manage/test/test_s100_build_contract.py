@@ -92,6 +92,11 @@ class S100BuildContractTest(unittest.TestCase):
         self.assertIn('"${ROOT_DIR}/scripts/build_s100_cross.sh"', local_script)
         self.assertIn("OMNI_ROBOT_INTERFACES_SOURCE", local_script)
         self.assertIn("/data/scan-planner-s100-local", local_script)
+        self.assertIn("/data/omni-s100-cache/images", local_script)
+        self.assertIn('exec 8> "${DOCKER_BASE}/.build.lock"', local_script)
+        self.assertIn("trap cleanup EXIT", local_script)
+        self.assertIn("stop_docker_daemon", local_script)
+        self.assertIn('2>&1 8>&- 9>&- &', local_script)
 
     def test_workflow_packages_only_the_core_overlay(self):
         workflow = read(".github/workflows/build-s100.yml")

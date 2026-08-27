@@ -230,12 +230,25 @@ OMNI_ROBOT_INTERFACES_SOURCE=/absolute/path/to/omni_robot_interfaces \
 ```
 
 构建缓存和输出位于 `/data/scan-planner-s100-local`，Docker 数据复用
-`/data/docker-s100`，不会操作系统 Docker daemon。中间 ROS 2 install 位于
+`/data/docker-s100`，镜像归档长期缓存于 `/data/omni-s100-cache/images`，不会
+操作系统 Docker daemon。脚本退出（包括构建失败）时会停止该专用 daemon、停止
+残留的本次构建容器并释放共享锁；SCAN-Planner 与 omni_slam 的本地 S100 构建不能
+并发使用同一个 `S100_DOCKER_BASE`。中间 ROS 2 install 位于
 `.../tros_ws/install`，最终可部署运行目录位于：
 
 ```text
 /data/scan-planner-s100-local/workspace/cc_ws/tros_ws/runtime
 ```
+
+缓存和运行目录均可覆盖，例如：
+
+```bash
+S100_IMAGE_CACHE_DIR=/mnt/build-cache/s100-images \
+S100_DOCKER_BASE=/mnt/build-cache/s100-docker \
+  ./scripts/test_s100_local.sh
+```
+
+如需指定完整镜像文件路径，可设置 `S100_IMAGE_ARCHIVE=/absolute/path/image.tar.gz`。
 
 GitHub Actions 中的 `build-s100.yml` 使用同一份 `build_s100_cross.sh`，并验证
 核心可执行文件为 ARM64，同时对所有被排除组件做负向产物检查。
